@@ -1,0 +1,30 @@
+TECNO KM5n stock crypto inventory
+=================================
+Android: 15 / API 35
+SoC: MT6768
+Kernel: 6.6.102-android15-8
+
+Encryption:
+  userdata: F2FS
+  fileencryption: aes-256-xts:aes-256-cts:v2
+  inlinecrypt: yes
+  keydirectory: /metadata/vold/metadata_encryption
+  metadata partition: yes
+
+Trustonic / KeyMint:
+  ro.hardware.kmsetkey=trustonic
+  ro.hardware.gatekeeper=trustonic
+  ro.vendor.mtk_trustonic_tee_support=1
+  ro.vendor.mtk_tee_gp_support=1
+  ro.vendor.keymaster_version=7.0
+  KeyMint service: /vendor/bin/hw/android.hardware.security.keymint@3.0-service.trustonic
+  Gatekeeper service: /vendor/bin/hw/android.hardware.gatekeeper-service.trustonic
+  TEE service: /vendor/bin/hw/vendor.trustonic.tee-service
+  TEE daemon: /vendor/bin/mcDriverDaemon
+  libraries: libMcClient.so, libTEECommon.so, libkmsetkey.so
+  TAs: vendor/app/mcRegistry/*
+
+Recovery:
+  vendor_boot header: v4
+  recovery ramdisk fragment type: 2 (recovery)
+  platform ramdisk fragment type: 1 (platform)

@@ -1,0 +1,9 @@
+# Stock-derived properties for TECNO KM5n / Android 15
+ro.hardware=mt6768
+ro.hardware.kmsetkey=trustonic
+ro.hardware.gatekeeper=trustonic
+ro.vendor.mtk_trustonic_tee_support=1
+ro.vendor.mtk_tee_gp_support=1
+ro.vendor.keymaster_version=7.0
+ro.crypto.volume.filenames_mode=aes-256-cts
+ro.vendor.mtk_f2fs_enable=1
