@@ -74,15 +74,22 @@ jobs:
             -b twrp-16.0 \
             --depth=1 \
             --partial-clone \
-            --clone-filter=blob:limit=10M
+            --clone-filter=blob:none
 
-          # Do not run `repo manifest -r` before the projects have been synced.
-          # repo 2.65 tries to resolve every project's HEAD and fails on absent
-          # worktrees (for example /twrp/bionic), which previously stopped CI
-          # before repo sync even started.
+          # TWRP-Test ships a maintained Android 16 minimal manifest which removes
+          # emulator, CTS, app, test, multimedia and other projects not needed to
+          # build recovery. The full AOSP manifest exceeds this runner's usable
+          # source volume and previously exhausted the 31 GB build filesystem.
+          mkdir -p .repo/local_manifests
+          curl -fsSL \
+            https://raw.githubusercontent.com/TWRP-Test/platform_manifest_twrp_aosp/twrp-16.0/remove-minimal.xml \
+            -o .repo/local_manifests/remove-minimal.xml
+          test -s .repo/local_manifests/remove-minimal.xml
+
           echo '=== Manifest initialized ==='
           test -f .repo/manifest.xml
           wc -l .repo/manifest.xml
+          wc -l .repo/local_manifests/remove-minimal.xml
 
           echo '=== Disk before repo sync ==='
           df -h "$GITHUB_WORKSPACE"
@@ -156,6 +163,7 @@ jobs:
           cp -f repo-sync.log build-debug/ 2>/dev/null || true
           cp -f repo-manifest.txt build-debug/ 2>/dev/null || true
           cp -f .repo/manifest.xml build-debug/manifest.xml 2>/dev/null || true
+          cp -f .repo/local_manifests/remove-minimal.xml build-debug/ 2>/dev/null || true
           cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
           cp -f out/verbose.log.gz build-debug/ 2>/dev/null || true
           find out/target/product/km5n -maxdepth 2 -type f \
