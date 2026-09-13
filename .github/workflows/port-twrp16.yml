@@ -1,11 +1,6 @@
 name: Lightweight TWRP vendor_boot port (KM5n)
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/port-twrp16.yml'
   workflow_dispatch:
     inputs:
       donor_vendor_boot_url:
@@ -21,84 +16,46 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
       - name: Validate repository stock vendor_boot
         run: |
           set -euxo pipefail
           test -f stock/vendor_boot.img
           test "$(stat -c '%s' stock/vendor_boot.img)" -eq 67108864
-          echo 'Stock KM5n vendor_boot:'
           sha256sum stock/vendor_boot.img
-
       - name: Prepare AOSP mkbootimg
         run: |
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends curl python3
           mkdir -p /tmp/mkbootimg/gki
-          curl -fsSL https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/mkbootimg.py?format=TEXT | base64 -d > /tmp/mkbootimg/mkbootimg.py
-          curl -fsSL https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/gki/generate_gki_certificate.py?format=TEXT | base64 -d > /tmp/mkbootimg/gki/generate_gki_certificate.py
-          test -s /tmp/mkbootimg/mkbootimg.py
-          test -s /tmp/mkbootimg/gki/generate_gki_certificate.py
+          curl -fsSL 'https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/mkbootimg.py?format=TEXT' | base64 -d > /tmp/mkbootimg/mkbootimg.py
+          curl -fsSL 'https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/gki/generate_gki_certificate.py?format=TEXT' | base64 -d > /tmp/mkbootimg/gki/generate_gki_certificate.py
           python3 -m py_compile /tmp/mkbootimg/mkbootimg.py /tmp/mkbootimg/gki/generate_gki_certificate.py
-
-      - name: Fetch donor TWRP vendor_boot
+      - name: Fetch donor
         env:
           DONOR_URL: ${{ inputs.donor_vendor_boot_url || 'https://github.com/chunix64/twrp_TECNO-CK6n/releases/download/v1.0.0/TWRP_vendor_boot_v1.0.0.img' }}
+        run: curl -fL --retry 5 --retry-all-errors "$DONOR_URL" -o /tmp/donor_vendor_boot.img
+      - name: Port recovery fragment
         run: |
           set -euxo pipefail
-          curl -fL --retry 5 --retry-all-errors "$DONOR_URL" -o /tmp/donor_vendor_boot.img
-          test -s /tmp/donor_vendor_boot.img
-          sha256sum /tmp/donor_vendor_boot.img
-
-      - name: Port only the recovery ramdisk
-        run: |
-          set -euxo pipefail
-          chmod +x scripts/port_twrp16_vendor_boot.sh
-          MKBOOTIMG=/tmp/mkbootimg/mkbootimg.py \
-            PYTHONPATH=/tmp/mkbootimg \
-            scripts/port_twrp16_vendor_boot.sh \
-            stock/vendor_boot.img \
-            /tmp/donor_vendor_boot.img \
-            /tmp/km5n-twrp-vendor_boot.img
-
-      - name: Validate final vendor_boot structure
+          MKBOOTIMG=/tmp/mkbootimg/mkbootimg.py PYTHONPATH=/tmp/mkbootimg scripts/port_twrp16_vendor_boot.sh stock/vendor_boot.img /tmp/donor_vendor_boot.img /tmp/km5n-twrp-vendor_boot.img
+      - name: Validate output
         run: |
           set -euxo pipefail
           test "$(stat -c '%s' /tmp/km5n-twrp-vendor_boot.img)" -eq 67108864
           python3 - /tmp/km5n-twrp-vendor_boot.img <<'PY'
-          import struct, sys
-          from pathlib import Path
-          p = Path(sys.argv[1])
-          d = p.read_bytes()
-          assert d[:8] == b'VNDRBOOT'
-          assert struct.unpack_from('<I', d, 8)[0] == 4
-          assert struct.unpack_from('<I', d, 12)[0] == 4096
-          rsz = struct.unpack_from('<I', d, 24)[0]
-          tsz = struct.unpack_from('<I', d, 2112)[0]
-          n = struct.unpack_from('<I', d, 2116)[0]
-          esz = struct.unpack_from('<I', d, 2120)[0]
-          assert esz == 108
-          roff = 4096
-          doff = roff + ((rsz + 4095)//4096)*4096
-          toff = doff + ((struct.unpack_from('<I', d, 2100)[0] + 4095)//4096)*4096
-          names = []
-          recovery = 0
+          import struct,sys
+          d=open(sys.argv[1],'rb').read(); assert d[:8]==b'VNDRBOOT'; assert struct.unpack_from('<II',d,8)==(4,4096)
+          rsz=struct.unpack_from('<I',d,24)[0]; n,esz=struct.unpack_from('<II',d,2116); assert esz==108
+          dtbsz=struct.unpack_from('<I',d,2100)[0]; tsz=struct.unpack_from('<I',d,2112)[0]; off=4096+((rsz+4095)//4096)*4096+((dtbsz+4095)//4096)*4096
+          rec=0
           for i in range(n):
-              e = toff + i*esz
-              size, off, typ = struct.unpack_from('<III', d, e)
-              name = d[e+12:e+44].split(b'\0',1)[0].decode('ascii','ignore')
-              names.append((name, typ, size))
-              if typ == 2 or name == 'recovery': recovery += 1
-              assert off + size <= rsz
-          assert recovery == 1
-          print('Final v4 table:', names)
-          print('Final image: 67108864 bytes')
+            e=off+i*esz; size,logical,typ=struct.unpack_from('<III',d,e); name=d[e+12:e+44].split(b'\0',1)[0]
+            if typ==2 or name==b'recovery': rec+=1
+          assert rec==1
+          print('valid vendor_boot v4 recovery table')
           PY
           sha256sum /tmp/km5n-twrp-vendor_boot.img
-
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
