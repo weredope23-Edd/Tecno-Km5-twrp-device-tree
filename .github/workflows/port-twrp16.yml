@@ -1,6 +1,7 @@
 name: Lightweight TWRP vendor_boot port (KM5n)
 
 on:
+  push:
   workflow_dispatch:
     inputs:
       donor_vendor_boot_url:
@@ -16,54 +17,54 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Validate repository stock vendor_boot
+      - name: Validate stock input
         run: |
           set -euxo pipefail
-          test -f stock/vendor_boot.img
           test "$(stat -c '%s' stock/vendor_boot.img)" -eq 67108864
           sha256sum stock/vendor_boot.img
-      - name: Prepare AOSP mkbootimg
+      - name: Prepare tools
         run: |
           set -euxo pipefail
-          sudo apt-get update
+          sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends curl python3
           mkdir -p /tmp/mkbootimg/gki
           curl -fsSL 'https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/mkbootimg.py?format=TEXT' | base64 -d > /tmp/mkbootimg/mkbootimg.py
           curl -fsSL 'https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/gki/generate_gki_certificate.py?format=TEXT' | base64 -d > /tmp/mkbootimg/gki/generate_gki_certificate.py
-          python3 -m py_compile /tmp/mkbootimg/mkbootimg.py /tmp/mkbootimg/gki/generate_gki_certificate.py
-      - name: Fetch donor
+          python3 -m py_compile /tmp/mkbootimg/mkbootimg.py
+      - name: Fetch CK6n donor
         env:
           DONOR_URL: ${{ inputs.donor_vendor_boot_url || 'https://github.com/chunix64/twrp_TECNO-CK6n/releases/download/v1.0.0/TWRP_vendor_boot_v1.0.0.img' }}
         run: curl -fL --retry 5 --retry-all-errors "$DONOR_URL" -o /tmp/donor_vendor_boot.img
-      - name: Port recovery fragment
+      - name: Build optimized port
         run: |
           set -euxo pipefail
           MKBOOTIMG=/tmp/mkbootimg/mkbootimg.py PYTHONPATH=/tmp/mkbootimg scripts/port_twrp16_vendor_boot.sh stock/vendor_boot.img /tmp/donor_vendor_boot.img /tmp/km5n-twrp-vendor_boot.img
-      - name: Validate output
+      - name: Independent structural audit
         run: |
           set -euxo pipefail
           test "$(stat -c '%s' /tmp/km5n-twrp-vendor_boot.img)" -eq 67108864
           python3 - /tmp/km5n-twrp-vendor_boot.img <<'PY'
           import struct,sys
-          d=open(sys.argv[1],'rb').read(); PAGE=4096; ENTRY=108
-          assert d[:8]==b'VNDRBOOT'; assert struct.unpack_from('<II',d,8)==(4,PAGE)
-          hs=struct.unpack_from('<I',d,2096)[0]; rsz=struct.unpack_from('<I',d,24)[0]
-          dtbsz=struct.unpack_from('<I',d,2100)[0]; tsz,n,esz=struct.unpack_from('<III',d,2112); bcsz=struct.unpack_from('<I',d,2124)[0]
-          assert hs==2128 and esz==ENTRY and tsz>=n*esz
-          align=lambda x:(x+PAGE-1)//PAGE*PAGE
-          ramoff=align(hs); tableoff=ramoff+align(rsz)+align(dtbsz); physical=ramoff; entries=[]
+          d=open(sys.argv[1],'rb').read(); P=4096; E=108; A=lambda x:(x+P-1)//P*P
+          assert d[:8]==b'VNDRBOOT' and struct.unpack_from('<II',d,8)==(4,P)
+          hs=struct.unpack_from('<I',d,2096)[0]; rsz=struct.unpack_from('<I',d,24)[0]; dtb=struct.unpack_from('<I',d,2100)[0]
+          tsz,n,esz=struct.unpack_from('<III',d,2112); bcsz=struct.unpack_from('<I',d,2124)[0]
+          assert hs==2128 and esz==E and tsz>=n*E
+          ram=A(hs); table=ram+A(rsz)+A(dtb); phys=ram; raw=0; rec=[]
           for i in range(n):
-            e=tableoff+i*esz; size,logical,typ=struct.unpack_from('<III',d,e); name=d[e+12:e+44].split(b'\0',1)[0]
-            assert logical==sum(x[0] for x in entries); assert physical+size <= tableoff-align(dtbsz)
-            entries.append((size,logical,typ,name)); physical += align(size)
-          assert physical==tableoff-align(dtbsz); assert tableoff+align(tsz)+align(bcsz) <= len(d)
-          rec=[x for x in entries if x[2]==2 or x[3]==b'recovery']; assert len(rec)==1
-          print('valid vendor_boot v4 recovery table; per-fragment physical padding verified')
+            e=table+i*E; size,logical,typ=struct.unpack_from('<III',d,e); name=d[e+12:e+44].split(b'\0',1)[0]
+            assert logical==raw and phys+size<=table-A(dtb)
+            if typ==2 or name==b'recovery': rec.append((i,size,name))
+            raw+=size; phys+=A(size)
+          assert phys==table-A(dtb) and len(rec)==1
+          assert table+ A(tsz)+bcsz <= len(d)
+          print('PASS: v4 table, logical offsets, per-fragment padding, DTB and bootconfig bounds')
+          print('Recovery entry:',rec[0])
           PY
           sha256sum /tmp/km5n-twrp-vendor_boot.img
-      - name: Upload result
+      - name: Upload port
         uses: actions/upload-artifact@v4
         with:
-          name: km5n-twrp-vendor-boot-port
+          name: km5n-twrp-vendor-boot-port-optimized
           path: /tmp/km5n-twrp-vendor_boot.img
           if-no-files-found: error
