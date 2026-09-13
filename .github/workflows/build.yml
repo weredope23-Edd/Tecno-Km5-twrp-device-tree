@@ -8,44 +8,13 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - name: Free runner disk space
-        run: |
-          set -euxo pipefail
-          echo '=== Disk before cleanup ==='
-          df -h /
-
-          # Keep the active JDK; Android build needs Java. Remove other cached
-          # tool versions and large image-only SDKs that this source build does not use.
-          if [ -n "${JAVA_HOME:-}" ] && [ -d "$JAVA_HOME" ]; then
-            JAVA_HOME_REAL="$(readlink -f "$JAVA_HOME")"
-            for d in /opt/hostedtoolcache/Java_*/*; do
-              [ -d "$d" ] || continue
-              if [ "$(readlink -f "$d/x64" 2>/dev/null || true)" != "$JAVA_HOME_REAL" ]; then
-                sudo rm -rf "$d"
-              fi
-            done
-          fi
-
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf /usr/local/lib/android || true
-          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
-          sudo rm -rf /opt/mssql || true
-          sudo rm -rf /usr/local/share/powershell || true
-          sudo rm -rf /usr/local/share/chromium || true
-          sudo rm -rf /usr/local/share/vscode || true
-          sudo rm -rf /usr/share/swift || true
-          sudo rm -rf /opt/az || true
-          sudo rm -rf /usr/local/julia* || true
-          sudo rm -rf /usr/local/.cache /root/.cache || true
-          sudo docker system prune -af || true
-          sudo apt-get clean || true
-          sudo rm -rf /var/lib/apt/lists/* || true
-
-          echo '=== Disk after cleanup ==='
-          df -h /
+      # TWRP 16 builders use this cleanup action before expanding the build disk.
+      # This is also used by current TWRP 16 device workflows.
+      - name: Cleanup runner
+        uses: rokibhasansagar/slimhub_actions@main
 
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
@@ -62,7 +31,7 @@ jobs:
       - name: Show runner disk space
         run: |
           set -eux
-          df -h
+          df -h /
           df -h /mnt || true
           df -h "$GITHUB_WORKSPACE"
 
@@ -74,13 +43,20 @@ jobs:
       - name: Dependencies
         run: |
           set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
+          export DEBIAN_FRONTEND=noninteractive
+          for attempt in 1 2 3; do
+            sudo apt-get update && break
+            echo "apt update failed; retry ${attempt}/3"
+            sleep 5
+          done
+          sudo apt-get install -y --no-install-recommends \
             git-core gnupg flex bison build-essential zip curl \
             zlib1g-dev libc6-dev-i386 lib32ncurses6 lib32z1 \
             libssl-dev bc rsync libelf-dev
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+          echo '=== Disk after dependencies ==='
+          df -h "$GITHUB_WORKSPACE"
 
       - name: Install repo
         run: |
@@ -110,10 +86,6 @@ jobs:
             -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
 
-          # Current TWRP-Test minimal manifest contains removals by both name and
-          # path. repo supports optional=true for stale removals, so mark every
-          # removal optional. This keeps the minimal manifest compatible when the
-          # upstream base manifest drops a project.
           python3 - <<'PY'
           from pathlib import Path
           p = Path('.repo/local_manifests/remove-minimal.xml')
@@ -127,8 +99,6 @@ jobs:
           test -f .repo/manifest.xml
           wc -l .repo/manifest.xml
           wc -l .repo/local_manifests/remove-minimal.xml
-          grep -c '<remove-project ' .repo/local_manifests/remove-minimal.xml || true
-
           echo '=== Disk before repo sync ==='
           df -h "$GITHUB_WORKSPACE"
 
