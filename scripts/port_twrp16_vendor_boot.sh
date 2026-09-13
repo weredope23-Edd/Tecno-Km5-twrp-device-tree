@@ -9,7 +9,7 @@ for f in "$STOCK" "$DONOR"; do [[ -s "$f" ]] || { echo "ERROR: image missing: $f
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/stock" "$WORK/donor"
 python3 - "$STOCK" "$DONOR" "$WORK" <<'PY'
-import json,struct,sys
+import json,struct,sys,shutil
 from pathlib import Path
 PAGE=4096; ENTRY=108
 align=lambda x:(x+PAGE-1)//PAGE*PAGE
@@ -32,7 +32,7 @@ def parse(path,out):
    size,logical,typ=struct.unpack_from('<III',d,e); name=d[e+12:e+44].split(b'\0',1)[0]
    if logical!=raw or typ>3 or physical+size>len(d) or any(c<32 or c>126 for c in name): ok=False; break
    entries.append((size,logical,typ,name,e)); raw+=size; physical+=align(size)
-  if ok and raw==rsz and physical+align(dtbsz)==tableoff and tableoff+tsz+bcsz<=len(d): candidates.append((tableoff,entries,physical))
+  if ok and raw==rsz and physical+align(dtbsz)==tableoff: candidates.append((tableoff,entries,physical))
  if len(candidates)!=1: raise SystemExit(f'{path}: could not uniquely locate v4 table (candidates={len(candidates)})')
  tableoff,raw_entries,physical_end=candidates[0]; out.mkdir(parents=True,exist_ok=True)
  (out/'dtb').write_bytes(d[physical_end:physical_end+dtbsz]); (out/'bootconfig').write_bytes(d[tableoff+align(tsz):tableoff+align(tsz)+bcsz])
@@ -45,8 +45,9 @@ def parse(path,out):
  for x in entries: print(f"  {x['name']!r} type={x['type']} size={x['size']}")
  return meta
 s=parse(sys.argv[1],Path(sys.argv[3])/'stock'); d=parse(sys.argv[2],Path(sys.argv[3])/'donor')
-sr=next(x for x in s['entries'] if x['type']==2 or x['name']=='recovery'); dr=next(x for x in d['entries'] if x['type']==2 or x['name']=='recovery')
-Path(Path(sys.argv[3])/'stock'/f"fragment_{s['entries'].index(sr)}.img").write_bytes(Path(sys.argv[3])/'donor'/f"fragment_{d['entries'].index(dr)}.img" .read_bytes() if False else Path(sys.argv[3])/'donor'/f"fragment_{d['entries'].index(dr)}.img")
+sidx=next(i for i,x in enumerate(s['entries']) if x['type']==2 or x['name']=='recovery'); didx=next(i for i,x in enumerate(d['entries']) if x['type']==2 or x['name']=='recovery')
+shutil.copyfile(Path(sys.argv[3])/'donor'/f'fragment_{didx}.img',Path(sys.argv[3])/'stock'/f'fragment_{sidx}.img')
+print(f"recovery payload replaced: stock {s['entries'][sidx]['size']} -> donor {d['entries'][didx]['size']} bytes")
 PY
 python3 - "$STOCK" "$WORK/stock" "$OUT" "$MKBOOTIMG" <<'PY'
 import json,struct,subprocess,sys
