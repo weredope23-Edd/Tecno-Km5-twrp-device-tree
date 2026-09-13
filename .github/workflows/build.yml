@@ -1,9 +1,6 @@
 name: Build TWRP KM5n (TWRP 16.0)
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
