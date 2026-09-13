@@ -11,12 +11,48 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
+      - name: Free runner disk space
+        run: |
+          set -euxo pipefail
+          echo '=== Disk before cleanup ==='
+          df -h /
+
+          # Keep the active JDK; Android build needs Java. Remove other cached
+          # tool versions and large image-only SDKs that this source build does not use.
+          if [ -n "${JAVA_HOME:-}" ] && [ -d "$JAVA_HOME" ]; then
+            JAVA_HOME_REAL="$(readlink -f "$JAVA_HOME")"
+            for d in /opt/hostedtoolcache/Java_*/*; do
+              [ -d "$d" ] || continue
+              if [ "$(readlink -f "$d/x64" 2>/dev/null || true)" != "$JAVA_HOME_REAL" ]; then
+                sudo rm -rf "$d"
+              fi
+            done
+          fi
+
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc /usr/local/.ghcup || true
+          sudo rm -rf /opt/mssql || true
+          sudo rm -rf /usr/local/share/powershell || true
+          sudo rm -rf /usr/local/share/chromium || true
+          sudo rm -rf /usr/local/share/vscode || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /opt/az || true
+          sudo rm -rf /usr/local/julia* || true
+          sudo rm -rf /usr/local/.cache /root/.cache || true
+          sudo docker system prune -af || true
+          sudo apt-get clean || true
+          sudo rm -rf /var/lib/apt/lists/* || true
+
+          echo '=== Disk after cleanup ==='
+          df -h /
+
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 512
           temp-reserve-mb: 128
-          swap-size-mb: 2048
+          swap-size-mb: 1024
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
