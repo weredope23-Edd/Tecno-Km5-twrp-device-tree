@@ -11,9 +11,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      # The maximize action mounts the reclaimed runner space over GITHUB_WORKSPACE.
-      # Keep the entire Android/TWRP source tree there; HOME remains on the small
-      # root filesystem and is not suitable for an AOSP source checkout.
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
@@ -64,11 +61,6 @@ jobs:
           mkdir -p "$TWRP_DIR"
           cd "$TWRP_DIR"
 
-          echo '=== Repo version ==='
-          repo version
-          echo '=== Disk before repo init ==='
-          df -h "$GITHUB_WORKSPACE"
-
           repo init \
             -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git \
             -b twrp-16.0 \
@@ -76,15 +68,19 @@ jobs:
             --partial-clone \
             --clone-filter=blob:none
 
-          # TWRP-Test ships a maintained Android 16 minimal manifest which removes
-          # emulator, CTS, app, test, multimedia and other projects not needed to
-          # build recovery. The full AOSP manifest exceeds this runner's usable
-          # source volume and previously exhausted the 31 GB build filesystem.
           mkdir -p .repo/local_manifests
           curl -fsSL \
             https://raw.githubusercontent.com/TWRP-Test/platform_manifest_twrp_aosp/twrp-16.0/remove-minimal.xml \
             -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
+
+          # The maintained minimal manifest can contain remove-project entries
+          # for projects that no longer exist in the current base manifest.
+          # repo treats those as fatal unless they are marked optional. Mark
+          # every removal optional so the same minimal manifest works across
+          # TWRP-Test manifest revisions without downloading those projects.
+          sed -i 's/<remove-project path="/<remove-project optional="true" path="/g' \
+            .repo/local_manifests/remove-minimal.xml
 
           echo '=== Manifest initialized ==='
           test -f .repo/manifest.xml
@@ -113,7 +109,6 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
           du -sh .repo 2>/dev/null || true
           du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
-
           exit "$sync_rc"
 
       - name: Add KM5n device tree
@@ -147,11 +142,8 @@ jobs:
 
           test -s out/target/product/km5n/vendor_boot.img
           stat -c '%n %s bytes' out/target/product/km5n/vendor_boot.img
-
-          bash device/tecno/km5n/scripts/validate_vendor_boot.sh \
-            out/target/product/km5n/vendor_boot.img
-          bash device/tecno/km5n/scripts/audit_twrp_output.sh \
-            out/target/product/km5n
+          bash device/tecno/km5n/scripts/validate_vendor_boot.sh out/target/product/km5n/vendor_boot.img
+          bash device/tecno/km5n/scripts/audit_twrp_output.sh out/target/product/km5n
 
       - name: Collect build logs on failure
         if: failure()
