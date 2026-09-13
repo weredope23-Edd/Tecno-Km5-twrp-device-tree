@@ -49,7 +49,11 @@ jobs:
           mkdir -p /tmp/stock-check
           cp stock/vendor_boot.img /tmp/stock-check/boot.img
           cd /tmp/stock-check
+          set +e
           /tmp/magiskboot unpack -h boot.img
+          rc=$?
+          set -e
+          test "$rc" -eq 0 -o "$rc" -eq 3
           test -s vendor_ramdisk_recovery.cpio
           echo 'Stock recovery component:'
           stat -c '%n %s bytes' vendor_ramdisk_recovery.cpio
@@ -78,7 +82,11 @@ jobs:
           mkdir -p /tmp/final-check
           cp /tmp/km5n-twrp-vendor_boot.img /tmp/final-check/boot.img
           cd /tmp/final-check
+          set +e
           /tmp/magiskboot unpack -h boot.img
+          rc=$?
+          set -e
+          test "$rc" -eq 0 -o "$rc" -eq 3
           test -s vendor_ramdisk_recovery.cpio
           test "$(stat -c '%s' boot.img)" -eq 67108864
           echo 'Final recovery component:'
