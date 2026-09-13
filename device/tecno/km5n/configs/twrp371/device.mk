@@ -1,7 +1,8 @@
 LOCAL_PATH := device/tecno/km5n
 
-# Android 14-based TWRP 3.7.1 device configuration. Hardware layout,
-# dynamic partitions and recovery ramdisk are taken from stock KM5n.
+# Android 14-based TWRP 3.7.1 device configuration. The target device
+# actually ships an Android 15 (API 35) vendor, so retain shipping API 35
+# for vendor compatibility while using the TWRP-14 source branch.
 $(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota/launch_with_vendor_ramdisk.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota/compression.mk)
 
@@ -25,9 +26,8 @@ AB_OTA_PARTITIONS += \
     vbmeta_system \
     vbmeta_vendor
 
-PRODUCT_SHIPPING_API_LEVEL := 34
+PRODUCT_SHIPPING_API_LEVEL := 35
 
-# Recovery-side MTK boot/health implementation used by vendor_boot devices.
 PRODUCT_PACKAGES += \
     android.hardware.boot@1.2-mtkimpl \
     android.hardware.boot@1.2-mtkimpl.recovery \
