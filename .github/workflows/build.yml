@@ -74,18 +74,24 @@ jobs:
             -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
 
-          # The maintained minimal manifest can contain remove-project entries
-          # for projects that no longer exist in the current base manifest.
-          # repo treats those as fatal unless they are marked optional. Mark
-          # every removal optional so the same minimal manifest works across
-          # TWRP-Test manifest revisions without downloading those projects.
-          sed -i 's/<remove-project path="/<remove-project optional="true" path="/g' \
-            .repo/local_manifests/remove-minimal.xml
+          # Current TWRP-Test minimal manifest contains removals by both name and
+          # path. repo supports optional=true for stale removals, so mark every
+          # removal optional. This keeps the minimal manifest compatible when the
+          # upstream base manifest drops a project.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.repo/local_manifests/remove-minimal.xml')
+          s = p.read_text()
+          s = s.replace('<remove-project ', '<remove-project optional="true" ')
+          s = s.replace('<remove-project optional="true" optional="true" ', '<remove-project optional="true" ')
+          p.write_text(s)
+          PY
 
           echo '=== Manifest initialized ==='
           test -f .repo/manifest.xml
           wc -l .repo/manifest.xml
           wc -l .repo/local_manifests/remove-minimal.xml
+          grep -c '<remove-project ' .repo/local_manifests/remove-minimal.xml || true
 
           echo '=== Disk before repo sync ==='
           df -h "$GITHUB_WORKSPACE"
@@ -153,7 +159,6 @@ jobs:
           cd "$TWRP_DIR" 2>/dev/null || exit 0
           mkdir -p build-debug
           cp -f repo-sync.log build-debug/ 2>/dev/null || true
-          cp -f repo-manifest.txt build-debug/ 2>/dev/null || true
           cp -f .repo/manifest.xml build-debug/manifest.xml 2>/dev/null || true
           cp -f .repo/local_manifests/remove-minimal.xml build-debug/ 2>/dev/null || true
           cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
