@@ -27,17 +27,25 @@ mkdir -p "$WORK/stock" "$WORK/donor"
 cp "$STOCK" "$WORK/stock/boot.img"
 cp "$DONOR" "$WORK/donor/boot.img"
 
-# magiskboot understands Android vendor_boot v4 and exposes the named
-# recovery fragment as vendor_ramdisk_recovery.cpio. TWRP itself uses this
-# exact component name for v4 vendor_boot repacking.
-(
-  cd "$WORK/stock"
-  magiskboot unpack -h boot.img
-)
-(
-  cd "$WORK/donor"
-  magiskboot unpack -h boot.img
-)
+# MagiskBoot returns code 3 for a valid vendor_boot image. It still writes
+# the unpacked components, so code 3 is expected and must not abort the port.
+unpack_vendor_boot() {
+  local dir=$1
+  (
+    cd "$dir"
+    set +e
+    magiskboot unpack -h boot.img
+    local rc=$?
+    set -e
+    if [[ "$rc" -ne 0 && "$rc" -ne 3 ]]; then
+      echo "ERROR: magiskboot failed to unpack vendor_boot (rc=$rc)" >&2
+      return "$rc"
+    fi
+  )
+}
+
+unpack_vendor_boot "$WORK/stock"
+unpack_vendor_boot "$WORK/donor"
 
 for d in stock donor; do
   [[ -s "$WORK/$d/vendor_ramdisk_recovery.cpio" ]] || {
@@ -49,8 +57,8 @@ for d in stock donor; do
 done
 
 # Preserve the complete KM5n stock vendor_boot and swap only the recovery
-# component. This deliberately leaves KM5n's stock kernel, DTB, platform
-# ramdisk, init_boot fragment, vendor modules, bootconfig and cmdline intact.
+# component. This leaves KM5n's stock kernel, DTB, platform ramdisk, vendor
+# modules, bootconfig and cmdline intact. init_boot remains a separate image.
 cp "$WORK/donor/vendor_ramdisk_recovery.cpio" "$WORK/stock/vendor_ramdisk_recovery.cpio"
 
 (
