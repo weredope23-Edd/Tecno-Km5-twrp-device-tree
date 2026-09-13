@@ -11,14 +11,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     steps:
-      # Android/TWRP source trees are much larger than the free space on a
-      # standard GitHub runner. Reclaim the runner's unused root/temp space
-      # before checkout so the source tree and out/ can coexist.
+      # The maximize action mounts the reclaimed runner space over GITHUB_WORKSPACE.
+      # Keep the entire Android/TWRP source tree there; HOME remains on the small
+      # root filesystem and is not suitable for an AOSP source checkout.
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
-          root-reserve-mb: 1024
-          temp-reserve-mb: 256
+          root-reserve-mb: 512
+          temp-reserve-mb: 128
           swap-size-mb: 2048
           remove-dotnet: 'true'
           remove-android: 'true'
@@ -31,6 +31,7 @@ jobs:
           set -eux
           df -h
           df -h /mnt || true
+          df -h "$GITHUB_WORKSPACE"
 
       - name: Checkout device tree
         uses: actions/checkout@v4
@@ -59,28 +60,33 @@ jobs:
       - name: Sync TWRP source
         run: |
           set -uo pipefail
-          mkdir -p "$HOME/twrp"
-          cd "$HOME/twrp"
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
+          mkdir -p "$TWRP_DIR"
+          cd "$TWRP_DIR"
 
           echo '=== Repo version ==='
           repo version
           echo '=== Disk before repo init ==='
-          df -h
+          df -h "$GITHUB_WORKSPACE"
 
           repo init \
             -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git \
             -b twrp-16.0 \
-            --depth=1
+            --depth=1 \
+            --partial-clone \
+            --clone-filter=blob:limit=10M
 
-          echo '=== Repo manifest ==='
-          repo manifest -r > repo-manifest.txt
-          wc -l repo-manifest.txt
+          # Do not run `repo manifest -r` before the projects have been synced.
+          # repo 2.65 tries to resolve every project's HEAD and fails on absent
+          # worktrees (for example /twrp/bionic), which previously stopped CI
+          # before repo sync even started.
+          echo '=== Manifest initialized ==='
+          test -f .repo/manifest.xml
+          wc -l .repo/manifest.xml
 
           echo '=== Disk before repo sync ==='
-          df -h
+          df -h "$GITHUB_WORKSPACE"
 
-          # A shallow AOSP/TWRP tree is still very large. Use one sync worker
-          # to reduce peak disk/network pressure and retry transient fetches.
           set -x
           repo sync \
             -c \
@@ -97,7 +103,7 @@ jobs:
 
           echo "repo sync exit code: ${sync_rc}"
           echo '=== Disk after repo sync ==='
-          df -h
+          df -h "$GITHUB_WORKSPACE"
           du -sh .repo 2>/dev/null || true
           du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
 
@@ -106,24 +112,27 @@ jobs:
       - name: Add KM5n device tree
         run: |
           set -euxo pipefail
-          mkdir -p "$HOME/twrp/device/tecno/km5n"
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
+          mkdir -p "$TWRP_DIR/device/tecno/km5n"
           rsync -a \
             --exclude='.git' \
             --exclude='.github' \
+            --exclude='twrp/' \
             "$GITHUB_WORKSPACE/" \
-            "$HOME/twrp/device/tecno/km5n/"
+            "$TWRP_DIR/device/tecno/km5n/"
 
       - name: Build TWRP vendor_boot
         run: |
           set -euxo pipefail
-          cd "$HOME/twrp"
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
+          cd "$TWRP_DIR"
           export ALLOW_MISSING_DEPENDENCIES=true
           export LC_ALL=C
-          export TMPDIR="$HOME/twrp/tmp"
+          export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
 
           echo '=== Disk before build ==='
-          df -h
+          df -h "$GITHUB_WORKSPACE"
 
           source build/envsetup.sh
           lunch twrp_km5n-eng
@@ -141,17 +150,19 @@ jobs:
         if: failure()
         run: |
           set +e
-          cd "$HOME/twrp"
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
+          cd "$TWRP_DIR" 2>/dev/null || exit 0
           mkdir -p build-debug
           cp -f repo-sync.log build-debug/ 2>/dev/null || true
           cp -f repo-manifest.txt build-debug/ 2>/dev/null || true
+          cp -f .repo/manifest.xml build-debug/manifest.xml 2>/dev/null || true
           cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
           cp -f out/verbose.log.gz build-debug/ 2>/dev/null || true
           find out/target/product/km5n -maxdepth 2 -type f \
             \( -name 'build.prop' -o -name '*recovery*.log' -o -name '*.mk' \) \
             -print > build-debug/output-files.txt 2>/dev/null || true
-          df -h > build-debug/disk.txt 2>&1 || true
-          du -sh "$HOME/twrp"/* 2>/dev/null | sort -h > build-debug/top-level-disk.txt || true
+          df -h "$GITHUB_WORKSPACE" > build-debug/disk.txt 2>&1 || true
+          du -sh "$TWRP_DIR"/* 2>/dev/null | sort -h > build-debug/top-level-disk.txt || true
 
       - name: Upload build output
         uses: actions/upload-artifact@v4
@@ -159,6 +170,6 @@ jobs:
         with:
           name: twrp-km5n-build-output
           path: |
-            ${{ env.HOME }}/twrp/out/target/product/km5n/vendor_boot.img
-            ${{ env.HOME }}/twrp/build-debug/**
+            ${{ github.workspace }}/twrp/out/target/product/km5n/vendor_boot.img
+            ${{ github.workspace }}/twrp/build-debug/**
           if-no-files-found: warn
