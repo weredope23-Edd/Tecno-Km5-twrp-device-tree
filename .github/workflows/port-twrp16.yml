@@ -1,6 +1,11 @@
 name: Lightweight TWRP vendor_boot port (KM5n)
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/port-twrp16.yml'
   workflow_dispatch:
     inputs:
       donor_vendor_boot_url:
@@ -16,6 +21,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Validate repository stock vendor_boot
         run: |
@@ -49,7 +56,7 @@ jobs:
 
       - name: Fetch donor TWRP vendor_boot
         env:
-          DONOR_URL: ${{ inputs.donor_vendor_boot_url }}
+          DONOR_URL: ${{ inputs.donor_vendor_boot_url || 'https://github.com/chunix64/twrp_TECNO-CK6n/releases/download/v1.0.0/TWRP_vendor_boot_v1.0.0.img' }}
         run: |
           set -euxo pipefail
           curl -fL --retry 5 --retry-all-errors "$DONOR_URL" -o /tmp/donor_vendor_boot.img
