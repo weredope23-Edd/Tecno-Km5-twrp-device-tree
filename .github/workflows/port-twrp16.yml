@@ -1,11 +1,6 @@
 name: Lightweight TWRP vendor_boot port (KM5n)
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/port-twrp16.yml'
   workflow_dispatch:
     inputs:
       donor_vendor_boot_url:
