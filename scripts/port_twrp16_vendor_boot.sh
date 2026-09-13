@@ -1,207 +1,93 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# KM5n lightweight vendor_boot v4 port.
-# Preserve the KM5n stock vendor_boot header, platform ramdisk, DTB,
-# bootconfig and recovery table metadata, while replacing only the compressed
-# recovery ramdisk fragment with the donor TWRP recovery fragment.
-
-usage() {
-  echo "Usage: $0 <stock_vendor_boot.img> <donor_twrp_vendor_boot.img> <output_vendor_boot.img>" >&2
-  exit 2
-}
-
+usage() { echo "Usage: $0 <stock_vendor_boot.img> <donor_twrp_vendor_boot.img> <output_vendor_boot.img>" >&2; exit 2; }
 [[ $# -eq 3 ]] || usage
-STOCK=$1
-DONOR=$2
-OUT=$3
-
+STOCK=$1; DONOR=$2; OUT=$3
 MKBOOTIMG=${MKBOOTIMG:-}
-[[ -n "$MKBOOTIMG" && -s "$MKBOOTIMG" ]] || {
-  echo 'ERROR: MKBOOTIMG must point to AOSP mkbootimg.py' >&2
-  exit 1
-}
-for f in "$STOCK" "$DONOR"; do
-  [[ -s "$f" ]] || { echo "ERROR: image missing: $f"; exit 1; }
-done
+[[ -n "$MKBOOTIMG" && -s "$MKBOOTIMG" ]] || { echo 'ERROR: MKBOOTIMG must point to AOSP mkbootimg.py' >&2; exit 1; }
+for f in "$STOCK" "$DONOR"; do [[ -s "$f" ]] || { echo "ERROR: image missing: $f" >&2; exit 1; }; done
 
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/stock" "$WORK/donor"
 
-# Parse Android vendor_boot v4 directly. MagiskBoot can identify these images,
-# but its vendor_boot return code is 3 and it does not expose the v4 fragment
-# table as files on all current releases. AOSP defines the v4 table as
-# 108-byte entries: size, offset, type, 32-byte name, 16 board-id words.
 python3 - "$STOCK" "$DONOR" "$WORK" <<'PY'
-import struct, sys
+import struct,sys
 from pathlib import Path
+PAGE=4096; ENTRY=108
 
-stock, donor, work = map(Path, sys.argv[1:])
-PAGE = 4096
-ENTRY = 108
-RECOVERY = 2
+def align(x): return (x+PAGE-1)//PAGE*PAGE
 
+def parse(path,out):
+ d=Path(path).read_bytes()
+ if d[:8]!=b'VNDRBOOT': raise SystemExit(f'{path}: bad magic')
+ hv,page=struct.unpack_from('<II',d,8)
+ if hv!=4 or page!=PAGE: raise SystemExit(f'{path}: expected v4/page 4096')
+ rsz=struct.unpack_from('<I',d,24)[0]
+ hs=struct.unpack_from('<I',d,2096)[0]; dtbsz=struct.unpack_from('<I',d,2100)[0]
+ tsz,n,esz=struct.unpack_from('<III',d,2112)
+ bcsz=struct.unpack_from('<I',d,2124)[0]
+ if hs!=2128 or esz!=ENTRY or tsz<n*esz: raise SystemExit(f'{path}: bad v4 table')
+ ramoff=align(hs)
+ tableoff=ramoff+sum(align(struct.unpack_from('<I',d,ramoff+i*4)[0]) for i in [])
+ # Physical fragment positions follow table order; table offsets are logical raw offsets.
+ tableoff=ramoff+sum(align(struct.unpack_from('<I',d,2100)[0]) for _ in [])
+ # DTB follows the physically padded ramdisk section. Its size is in the header.
+ tableoff=ramoff+align(rsz)+align(dtbsz)
+ bootoff=tableoff+align(tsz)
+ out.mkdir(parents=True,exist_ok=True)
+ (out/'dtb').write_bytes(d[ramoff+align(rsz):ramoff+align(rsz)+dtbsz])
+ (out/'bootconfig').write_bytes(d[bootoff:bootoff+bcsz])
+ entries=[]; physical=ramoff
+ for i in range(n):
+  e=tableoff+i*esz
+  size,logical,typ=struct.unpack_from('<III',d,e)
+  name=d[e+12:e+44].split(b'\0',1)[0].decode('ascii','ignore')
+  board=struct.unpack_from('<16I',d,e+44)
+  if logical!=sum(x['size'] for x in entries):
+   raise SystemExit(f'{path}: non-cumulative logical offset at entry {i}: {logical}')
+  frag=d[physical:physical+size]
+  if len(frag)!=size: raise SystemExit(f'{path}: fragment {i} truncated')
+  fp=out/f'fragment_{i}.img'; fp.write_bytes(frag)
+  entries.append({'size':size,'type':typ,'name':name,'board':board,'path':fp})
+  physical+=align(size)
+ if physical!=ramoff+sum(align(x['size']) for x in entries): raise SystemExit('ramdisk layout error')
+ rec=[x for x in entries if x['type']==2 or x['name']=='recovery']
+ if len(rec)!=1: raise SystemExit(f'{path}: expected one recovery entry, got {len(rec)}')
+ print(f'{path}: ramdisk={rsz} entries={n}, physical_end=0x{physical:x}')
+ for x in entries: print(f"  {x['name']!r} type={x['type']} size={x['size']}")
+ return {'data':d,'entries':entries,'recovery':rec[0]}
 
-def align(x, n=PAGE):
-    return (x + n - 1) // n * n
-
-
-def parse(path, outdir):
-    data = path.read_bytes()
-    if data[:8] != b'VNDRBOOT':
-        raise SystemExit(f'{path}: bad vendor_boot magic')
-    hv = struct.unpack_from('<I', data, 8)[0]
-    page = struct.unpack_from('<I', data, 12)[0]
-    if hv != 4 or page != PAGE:
-        raise SystemExit(f'{path}: expected vendor_boot v4/page 4096, got v{hv}/page {page}')
-
-    vendor_ramdisk_size = struct.unpack_from('<I', data, 24)[0]
-    cmdline = data[28:28+2048].split(b'\0', 1)[0].decode('ascii', 'ignore')
-    tags_addr = struct.unpack_from('<I', data, 2076)[0]
-    name = data[2080:2096].split(b'\0', 1)[0].decode('ascii', 'ignore')
-    header_size = struct.unpack_from('<I', data, 2096)[0]
-    dtb_size = struct.unpack_from('<I', data, 2100)[0]
-    dtb_addr = struct.unpack_from('<Q', data, 2104)[0]
-    table_size = struct.unpack_from('<I', data, 2112)[0]
-    entry_num = struct.unpack_from('<I', data, 2116)[0]
-    entry_size = struct.unpack_from('<I', data, 2120)[0]
-    bootconfig_size = struct.unpack_from('<I', data, 2124)[0]
-    kernel_addr = struct.unpack_from('<I', data, 16)[0]
-    ramdisk_addr = struct.unpack_from('<I', data, 20)[0]
-
-    if header_size != 2128 or entry_size != ENTRY or table_size < entry_num * entry_size:
-        raise SystemExit(f'{path}: unexpected v4 header/table sizes')
-
-    ramdisk_off = align(header_size)
-    dtb_off = ramdisk_off + align(vendor_ramdisk_size)
-    table_off = dtb_off + align(dtb_size)
-    bootconfig_off = table_off + align(table_size)
-
-    outdir.mkdir(parents=True, exist_ok=True)
-    (outdir / 'dtb').write_bytes(data[dtb_off:dtb_off+dtb_size])
-    (outdir / 'bootconfig').write_bytes(data[bootconfig_off:bootconfig_off+bootconfig_size])
-
-    entries = []
-    for i in range(entry_num):
-        eoff = table_off + i * entry_size
-        size, off, typ = struct.unpack_from('<III', data, eoff)
-        ename = data[eoff+12:eoff+44].split(b'\0', 1)[0].decode('ascii', 'ignore')
-        board = list(struct.unpack_from('<16I', data, eoff+44))
-        frag = data[ramdisk_off+off:ramdisk_off+off+size]
-        frag_path = outdir / f'fragment_{i}.img'
-        frag_path.write_bytes(frag)
-        entries.append({
-            'path': frag_path,
-            'size': size,
-            'type': typ,
-            'name': ename,
-            'board': board,
-        })
-
-    recovery = [e for e in entries if e['type'] == RECOVERY or e['name'] == 'recovery']
-    if len(recovery) != 1:
-        raise SystemExit(f'{path}: expected exactly one recovery fragment, found {len(recovery)}')
-
-    print(f'{path}: v4 page={page} ramdisk={vendor_ramdisk_size} entries={entry_num}')
-    for e in entries:
-        print(f"  fragment name={e['name']!r} type={e['type']} size={e['size']}")
-
-    return {
-        'data': data,
-        'kernel_addr': kernel_addr,
-        'ramdisk_addr': ramdisk_addr,
-        'tags_addr': tags_addr,
-        'dtb_addr': dtb_addr,
-        'cmdline': cmdline,
-        'name': name,
-        'dtb': outdir / 'dtb',
-        'bootconfig': outdir / 'bootconfig',
-        'entries': entries,
-        'recovery': recovery[0],
-    }
-
-s = parse(stock, work / 'stock')
-d = parse(donor, work / 'donor')
-
-# Use donor recovery bytes but KM5n stock table metadata. This keeps the
-# bootloader's recovery selection semantics tied to the KM5n board IDs.
-recovery = s['recovery']
-recovery['path'].write_bytes(d['recovery']['path'].read_bytes())
-print(f"donor recovery bytes: {d['recovery']['size']} -> KM5n recovery slot")
+s=parse(sys.argv[1],Path(sys.argv[3])/'stock')
+d=parse(sys.argv[2],Path(sys.argv[3])/'donor')
+s['recovery']['path'].write_bytes(d['recovery']['path'].read_bytes())
+print('recovery payload replaced with donor TWRP fragment')
 PY
 
-# Build a vendor_boot v4 with AOSP mkbootimg. Fragment bytes are already
-# compressed, so mkbootimg stores them as-is and rebuilds the v4 table/offsets.
-args=(
-  python3 "$MKBOOTIMG"
-  --header_version 4
-  --pagesize 4096
-  --base 0
-  --kernel_offset "$(python3 -c "import struct; d=open('$STOCK','rb').read(24); print(struct.unpack_from('<I',d,16)[0])")"
-  --ramdisk_offset "$(python3 -c "import struct; d=open('$STOCK','rb').read(24); print(struct.unpack_from('<I',d,20)[0])")"
-  --tags_offset "$(python3 -c "import struct; d=open('$STOCK','rb').read(2080); print(struct.unpack_from('<I',d,2076)[0])")"
-  --dtb_offset "$(python3 -c "import struct; d=open('$STOCK','rb').read(2112); print(struct.unpack_from('<Q',d,2104)[0])")"
-  --vendor_cmdline "$(python3 -c "import sys; d=open('$STOCK','rb').read(2076); print(d[28:2076].split(b'\\0',1)[0].decode('ascii','ignore'))")"
-  --board "$(python3 -c "d=open('$STOCK','rb').read(2096); print(d[2080:2096].split(b'\\0',1)[0].decode('ascii','ignore'))")"
-  --dtb "$WORK/stock/dtb"
-  --vendor_bootconfig "$WORK/stock/bootconfig"
-  --vendor_boot "$OUT"
-)
-
-# Add all stock fragments, replacing only the recovery fragment. Board IDs are
-# emitted from the stock table by the Python helper above via a second pass.
-while IFS= read -r line; do
-  eval "$line"
-done < <(python3 - "$WORK/stock" <<'PY'
-import struct, sys
-from pathlib import Path
-p = Path(sys.argv[1])
-# Re-read the stock fragment metadata saved in the image files and original
-# vendor_boot header. The helper's fixed 108-byte v4 entry format is used here.
-# The shell receives safe numeric/name/path values only.
-# Metadata is encoded as shell assignments for the mkbootimg argument list.
-PY
-)
-
-# Construct the mkbootimg command from the two original tables in a small
-# Python launcher so board IDs and fragment ordering remain exact.
 python3 - "$STOCK" "$WORK/stock" "$OUT" "$MKBOOTIMG" <<'PY'
-import struct, subprocess, sys
+import struct,subprocess,sys
 from pathlib import Path
-stock, work, out, mkbootimg = map(Path, sys.argv[1:])
-data = stock.read_bytes()
-entry_num = struct.unpack_from('<I', data, 2116)[0]
-table_off = 4096 + ((struct.unpack_from('<I', data, 24)[0] + 4095)//4096)*4096
-args = [sys.executable, str(mkbootimg), '--header_version', '4', '--pagesize', '4096', '--base', '0',
-        '--kernel_offset', str(struct.unpack_from('<I', data, 16)[0]),
-        '--ramdisk_offset', str(struct.unpack_from('<I', data, 20)[0]),
-        '--tags_offset', str(struct.unpack_from('<I', data, 2076)[0]),
-        '--dtb_offset', str(struct.unpack_from('<Q', data, 2104)[0]),
-        '--vendor_cmdline', data[28:2076].split(b'\0',1)[0].decode('ascii','ignore'),
-        '--board', data[2080:2096].split(b'\0',1)[0].decode('ascii','ignore'),
-        '--dtb', str(work/'dtb'), '--vendor_bootconfig', str(work/'bootconfig'), '--vendor_boot', str(out)]
-for i in range(entry_num):
-    eoff = table_off + i*108
-    typ = struct.unpack_from('<I', data, eoff+8)[0]
-    name = data[eoff+12:eoff+44].split(b'\0',1)[0].decode('ascii','ignore')
-    board = struct.unpack_from('<16I', data, eoff+44)
-    frag = work / f'fragment_{i}.img'
-    args += ['--ramdisk_type', str(typ), '--ramdisk_name', name or f'fragment{i}']
-    for j, val in enumerate(board):
-        args += [f'--board_id{j}', str(val)]
-    args += ['--vendor_ramdisk_fragment', str(frag)]
-subprocess.run(args, check=True)
+stock,work,out,mk=map(Path,sys.argv[1:])
+d=stock.read_bytes(); page=4096
+align=lambda x:(x+page-1)//page*page
+args=[sys.executable,str(mk),'--header_version','4','--pagesize','4096','--base','0',
+ '--kernel_offset',str(struct.unpack_from('<I',d,16)[0]),
+ '--ramdisk_offset',str(struct.unpack_from('<I',d,20)[0]),
+ '--tags_offset',str(struct.unpack_from('<I',d,2076)[0]),
+ '--dtb_offset',str(struct.unpack_from('<Q',d,2104)[0]),
+ '--vendor_cmdline',d[28:2076].split(b'\0',1)[0].decode('ascii','ignore'),
+ '--board',d[2080:2096].split(b'\0',1)[0].decode('ascii','ignore'),
+ '--dtb',str(work/'dtb'),'--vendor_bootconfig',str(work/'bootconfig'),'--vendor_boot',str(out)]
+rsz=struct.unpack_from('<I',d,24)[0]; n,esz=struct.unpack_from('<II',d,2116); tableoff=align(2128)+align(rsz)+align(struct.unpack_from('<I',d,2100)[0])
+for i in range(n):
+ e=tableoff+i*esz; typ=struct.unpack_from('<I',d,e+8)[0]; name=d[e+12:e+44].split(b'\0',1)[0].decode('ascii','ignore'); board=struct.unpack_from('<16I',d,e+44)
+ args += ['--ramdisk_type',str(typ),'--ramdisk_name',name or f'fragment{i}']
+ for j,v in enumerate(board): args += [f'--board_id{j}',str(v)]
+ args += ['--vendor_ramdisk_fragment',str(work/f'fragment_{i}.img')]
+subprocess.run(args,check=True)
+size=out.stat().st_size
+if size>67108864: raise SystemExit(f'output {size} > 64MiB')
+out.open('r+b').truncate(67108864)
+print(f'OK: {out} 67108864 bytes')
 PY
-
-# mkbootimg emits the logical image; vendor_boot is a fixed 64 MiB partition.
-SIZE=$(stat -c '%s' "$OUT")
-[[ "$SIZE" -le 67108864 ]] || {
-  echo "ERROR: rebuilt vendor_boot is $SIZE bytes, larger than 64 MiB" >&2
-  exit 1
-}
-truncate -s 67108864 "$OUT"
-[[ "$(stat -c '%s' "$OUT")" -eq 67108864 ]] || exit 1
-
 sha256sum "$OUT"
-echo "OK: rebuilt KM5n vendor_boot v4 with donor TWRP recovery fragment: $OUT (67108864 bytes)"
