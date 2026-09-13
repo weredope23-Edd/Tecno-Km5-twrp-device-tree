@@ -22,9 +22,15 @@ def parse(path,out):
  rsz=struct.unpack_from('<I',d,24)[0]; hs=struct.unpack_from('<I',d,2096)[0]; dtbsz=struct.unpack_from('<I',d,2100)[0]
  tsz,n,esz=struct.unpack_from('<III',d,2112); bcsz=struct.unpack_from('<I',d,2124)[0]
  if hs!=2128 or esz!=ENTRY or tsz<n*esz: raise SystemExit(f'{path}: bad v4 table header')
- ramoff=align(hs); start=ramoff+align(rsz); stop=min(len(d),start+(n+4)*PAGE); candidates=[]
- for tableoff in range(start,stop+1,PAGE):
-  if tableoff+tsz+bcsz>len(d): continue
+ ramoff=align(hs)
+ # The table follows all physically padded fragments and the padded DTB.
+ # Its offset cannot be derived from align(vendor_ramdisk_size), because
+ # AOSP pads every fragment individually. Scan the bounded possible range.
+ min_table=ramoff+align(rsz)+align(dtbsz)
+ max_table=ramoff+align(rsz)+n*PAGE+align(dtbsz)+PAGE
+ candidates=[]
+ for tableoff in range(min_table,max_table+1,PAGE):
+  if tableoff+align(tsz)+bcsz>len(d): continue
   raw=0; physical=ramoff; entries=[]; ok=True
   for i in range(n):
    e=tableoff+i*esz
