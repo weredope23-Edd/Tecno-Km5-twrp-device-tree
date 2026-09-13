@@ -17,12 +17,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Validate stock input
+      - name: Validate repository stock vendor_boot
         run: |
           set -euxo pipefail
+          test -f stock/vendor_boot.img
           test "$(stat -c '%s' stock/vendor_boot.img)" -eq 67108864
           sha256sum stock/vendor_boot.img
-      - name: Prepare tools
+      - name: Prepare AOSP mkbootimg
         run: |
           set -euxo pipefail
           sudo apt-get update -qq
@@ -30,15 +31,16 @@ jobs:
           mkdir -p /tmp/mkbootimg/gki
           curl -fsSL 'https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/mkbootimg.py?format=TEXT' | base64 -d > /tmp/mkbootimg/mkbootimg.py
           curl -fsSL 'https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/gki/generate_gki_certificate.py?format=TEXT' | base64 -d > /tmp/mkbootimg/gki/generate_gki_certificate.py
-          python3 -m py_compile /tmp/mkbootimg/mkbootimg.py
-      - name: Fetch CK6n donor
+          python3 -m py_compile /tmp/mkbootimg/mkbootimg.py /tmp/mkbootimg/gki/generate_gki_certificate.py
+      - name: Fetch donor
         env:
           DONOR_URL: ${{ inputs.donor_vendor_boot_url || 'https://github.com/chunix64/twrp_TECNO-CK6n/releases/download/v1.0.0/TWRP_vendor_boot_v1.0.0.img' }}
         run: curl -fL --retry 5 --retry-all-errors "$DONOR_URL" -o /tmp/donor_vendor_boot.img
-      - name: Build optimized port
+      - name: Port recovery fragment
         run: |
           set -euxo pipefail
-          MKBOOTIMG=/tmp/mkbootimg/mkbootimg.py PYTHONPATH=/tmp/mkbootimg scripts/port_twrp16_vendor_boot.sh stock/vendor_boot.img /tmp/donor_vendor_boot.img /tmp/km5n-twrp-vendor_boot.img
+          chmod +x scripts/port_twrp16_vendor_boot.sh
+          MKBOOTIMG=/tmp/mkbootimg/mkbootimg.py PYTHONPATH=/tmp/mkbootimg bash scripts/port_twrp16_vendor_boot.sh stock/vendor_boot.img /tmp/donor_vendor_boot.img /tmp/km5n-twrp-vendor_boot.img
       - name: Independent structural audit
         run: |
           set -euxo pipefail
@@ -50,19 +52,27 @@ jobs:
           hs=struct.unpack_from('<I',d,2096)[0]; rsz=struct.unpack_from('<I',d,24)[0]; dtb=struct.unpack_from('<I',d,2100)[0]
           tsz,n,esz=struct.unpack_from('<III',d,2112); bcsz=struct.unpack_from('<I',d,2124)[0]
           assert hs==2128 and esz==E and tsz>=n*E
-          ram=A(hs); table=ram+A(rsz)+A(dtb); phys=ram; raw=0; rec=[]
-          for i in range(n):
-            e=table+i*E; size,logical,typ=struct.unpack_from('<III',d,e); name=d[e+12:e+44].split(b'\0',1)[0]
-            assert logical==raw and phys+size<=table-A(dtb)
-            if typ==2 or name==b'recovery': rec.append((i,size,name))
-            raw+=size; phys+=A(size)
-          assert phys==table-A(dtb) and len(rec)==1
-          assert table+ A(tsz)+bcsz <= len(d)
-          print('PASS: v4 table, logical offsets, per-fragment padding, DTB and bootconfig bounds')
-          print('Recovery entry:',rec[0])
+          ram=A(hs); start=ram+A(rsz); found=[]
+          for table in range(start,min(len(d),start+(n+4)*P)+1,P):
+            raw=0; phys=ram; ok=table+tsz+bcsz<=len(d)
+            rec=[]
+            if not ok: continue
+            for i in range(n):
+              e=table+i*E
+              if e+E>len(d): ok=False; break
+              size,logical,typ=struct.unpack_from('<III',d,e); name=d[e+12:e+44].split(b'\0',1)[0]
+              if logical!=raw or typ>3 or phys+size>len(d): ok=False; break
+              raw+=size; phys+=A(size)
+              if typ==2 or name==b'recovery': rec.append(i)
+            if ok and raw==rsz and phys+A(dtb)==table and len(rec)==1: found.append((table,rec[0]))
+          assert len(found)==1
+          table,ri=found[0]
+          assert table+ A(tsz)+bcsz<=len(d)
+          print('PASS: v4 table, logical offsets, per-fragment padding, DTB, bootconfig, recovery entry')
+          print('table=0x%x recovery_entry=%d' % (table,ri))
           PY
           sha256sum /tmp/km5n-twrp-vendor_boot.img
-      - name: Upload port
+      - name: Upload result
         uses: actions/upload-artifact@v4
         with:
           name: km5n-twrp-vendor-boot-port-optimized
