@@ -11,8 +11,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      # TWRP 16 builders use this cleanup action before expanding the build disk.
-      # This is also used by current TWRP 16 device workflows.
       - name: Cleanup runner
         uses: rokibhasansagar/slimhub_actions@main
 
@@ -22,11 +20,11 @@ jobs:
           root-reserve-mb: 512
           temp-reserve-mb: 128
           swap-size-mb: 1024
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
+          remove-dotnet: 'false'
+          remove-android: 'false'
+          remove-haskell: 'false'
+          remove-codeql: 'false'
+          remove-docker-images: 'false'
 
       - name: Show runner disk space
         run: |
@@ -50,11 +48,14 @@ jobs:
             sleep 5
           done
           sudo apt-get install -y --no-install-recommends \
+            openjdk-17-jdk-headless \
             git-core gnupg flex bison build-essential zip curl \
             zlib1g-dev libc6-dev-i386 lib32ncurses6 lib32z1 \
             libssl-dev bc rsync libelf-dev
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+          echo '=== Java ==='
+          java -version
           echo '=== Disk after dependencies ==='
           df -h "$GITHUB_WORKSPACE"
 
