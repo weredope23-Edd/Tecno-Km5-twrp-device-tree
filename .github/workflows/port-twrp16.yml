@@ -1,6 +1,11 @@
 name: Lightweight TWRP vendor_boot port (KM5n)
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/port-twrp16.yml'
   workflow_dispatch:
     inputs:
       donor_vendor_boot_url:
@@ -35,8 +40,8 @@ jobs:
           curl -fsSL https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk -o /tmp/magisk.apk
           unzip -p /tmp/magisk.apk lib/x86_64/libmagiskboot.so > /tmp/magiskboot
           chmod +x /tmp/magiskboot
-          /tmp/magiskboot --help >/dev/null
-          /tmp/magiskboot --version || true
+          test -x /tmp/magiskboot
+          /tmp/magiskboot || true
 
       - name: Inspect stock vendor_boot
         run: |
