@@ -1,0 +1,52 @@
+name: Port TWRP 16 into stock KM5n vendor_boot
+
+on:
+  workflow_dispatch:
+    inputs:
+      twrp_ramdisk_url:
+        description: 'URL to a TWRP 16 recovery ramdisk/component (cpio or compressed cpio)'
+        required: true
+        type: string
+
+jobs:
+  port:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare tools
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl xz-utils lz4 cpio
+          curl -fsSL https://github.com/topjohnwu/Magisk/releases/latest/download/Magisk-26.4.apk -o /tmp/magisk.apk || true
+          unzip -p /tmp/magisk.apk lib/x86_64/libmagiskboot.so > /tmp/magiskboot 2>/dev/null || true
+          if [[ -s /tmp/magiskboot ]]; then chmod +x /tmp/magiskboot; else echo 'magiskboot download/extraction failed'; exit 1; fi
+
+      - name: Fetch stock vendor_boot
+        run: |
+          set -euxo pipefail
+          test -s stock/vendor_boot.img
+          stat -c '%n %s bytes' stock/vendor_boot.img
+
+      - name: Fetch TWRP recovery ramdisk
+        env:
+          TWRP_RAMDISK_URL: ${{ inputs.twrp_ramdisk_url }}
+        run: |
+          set -euxo pipefail
+          curl -fL "$TWRP_RAMDISK_URL" -o /tmp/twrp_ramdisk
+          test -s /tmp/twrp_ramdisk
+
+      - name: Port ramdisk into stock vendor_boot
+        run: |
+          set -euxo pipefail
+          chmod +x scripts/port_twrp16_vendor_boot.sh
+          scripts/port_twrp16_vendor_boot.sh stock/vendor_boot.img /tmp/twrp_ramdisk out-vendor_boot.img
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-vendor-boot-port
+          path: out-vendor_boot.img
