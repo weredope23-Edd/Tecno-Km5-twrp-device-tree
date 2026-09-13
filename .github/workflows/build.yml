@@ -1,0 +1,58 @@
+name: Build TWRP KM5n (TWRP 16.0)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev libc6-dev-i386 lib32ncurses6 lib32z1 libssl-dev bc rsync ccache libelf-dev
+      - name: Repo
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -L https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          chmod a+x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+      - name: Sync TWRP
+        run: |
+          mkdir -p "$HOME/twrp" && cd "$HOME/twrp"
+          repo init -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git -b twrp-16.0
+          repo sync -j2 --force-sync
+      - name: Add device tree
+        run: |
+          mkdir -p "$HOME/twrp/device/tecno"
+          cp -a "$GITHUB_WORKSPACE" "$HOME/twrp/device/tecno/km5n"
+      - name: Build
+        run: |
+          cd "$HOME/twrp"
+          export ALLOW_MISSING_DEPENDENCIES=true LC_ALL=C
+          source build/envsetup.sh
+          lunch twrp_km5n-eng
+          mka vendorbootimage -j2
+          test -s out/target/product/km5n/vendor_boot.img
+          stat -c "%n %s bytes" out/target/product/km5n/vendor_boot.img
+          bash device/tecno/km5n/scripts/validate_vendor_boot.sh out/target/product/km5n/vendor_boot.img
+          bash device/tecno/km5n/scripts/audit_twrp_output.sh out/target/product/km5n
+      - name: Collect build logs on failure
+        if: failure()
+        run: |
+          cd "$HOME/twrp"
+          mkdir -p build-debug
+          cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
+          cp -f out/verbose.log.gz build-debug/ 2>/dev/null || true
+          find out/target/product/km5n -maxdepth 2 -type f \
+            \( -name 'build.prop' -o -name '*recovery*.log' -o -name '*.mk' \) \
+            -print > build-debug/output-files.txt 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twrp-km5n-build-output
+          path: |
+            ${{ env.HOME }}/twrp/out/target/product/km5n/vendor_boot.img
+            ${{ env.HOME }}/twrp/build-debug/**
+          if-no-files-found: warn
