@@ -58,21 +58,50 @@ jobs:
 
       - name: Sync TWRP source
         run: |
-          set -euxo pipefail
+          set -uo pipefail
           mkdir -p "$HOME/twrp"
           cd "$HOME/twrp"
+
+          echo '=== Repo version ==='
+          repo version
+          echo '=== Disk before repo init ==='
+          df -h
+
           repo init \
             -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git \
             -b twrp-16.0 \
             --depth=1
+
+          echo '=== Repo manifest ==='
+          repo manifest -r > repo-manifest.txt
+          wc -l repo-manifest.txt
+
+          echo '=== Disk before repo sync ==='
+          df -h
+
+          # A shallow AOSP/TWRP tree is still very large. Use one sync worker
+          # to reduce peak disk/network pressure and retry transient fetches.
+          set -x
           repo sync \
             -c \
-            -j2 \
+            -j1 \
             --force-sync \
             --no-clone-bundle \
             --no-tags \
             --optimized-fetch \
-            --prune
+            --retry-fetches=5 \
+            --prune \
+            --fail-fast 2>&1 | tee repo-sync.log
+          sync_rc=${PIPESTATUS[0]}
+          set +x
+
+          echo "repo sync exit code: ${sync_rc}"
+          echo '=== Disk after repo sync ==='
+          df -h
+          du -sh .repo 2>/dev/null || true
+          du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
+
+          exit "$sync_rc"
 
       - name: Add KM5n device tree
         run: |
@@ -114,6 +143,8 @@ jobs:
           set +e
           cd "$HOME/twrp"
           mkdir -p build-debug
+          cp -f repo-sync.log build-debug/ 2>/dev/null || true
+          cp -f repo-manifest.txt build-debug/ 2>/dev/null || true
           cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
           cp -f out/verbose.log.gz build-debug/ 2>/dev/null || true
           find out/target/product/km5n -maxdepth 2 -type f \
