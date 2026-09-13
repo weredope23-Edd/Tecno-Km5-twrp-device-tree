@@ -1,6 +1,7 @@
 name: Lightweight TWRP vendor_boot port (KM5n)
 
 on:
+  push:
   workflow_dispatch:
     inputs:
       donor_vendor_boot_url:
@@ -46,30 +47,18 @@ jobs:
           python3 - /tmp/km5n-twrp-vendor_boot.img <<'PY'
           import struct,sys
           d=open(sys.argv[1],'rb').read(); PAGE=4096; ENTRY=108
-          assert d[:8]==b'VNDRBOOT'
-          assert struct.unpack_from('<II',d,8)==(4,PAGE)
+          assert d[:8]==b'VNDRBOOT'; assert struct.unpack_from('<II',d,8)==(4,PAGE)
           hs=struct.unpack_from('<I',d,2096)[0]; rsz=struct.unpack_from('<I',d,24)[0]
-          dtbsz=struct.unpack_from('<I',d,2100)[0]; tsz,n,esz=struct.unpack_from('<III',d,2112)
-          bcsz=struct.unpack_from('<I',d,2124)[0]
+          dtbsz=struct.unpack_from('<I',d,2100)[0]; tsz,n,esz=struct.unpack_from('<III',d,2112)[0:3]; bcsz=struct.unpack_from('<I',d,2124)[0]
           assert hs==2128 and esz==ENTRY and tsz>=n*esz
           align=lambda x:(x+PAGE-1)//PAGE*PAGE
-          ramoff=align(hs); tableoff=ramoff+sum(align(struct.unpack_from('<I',d,0)[0]) for _ in [])
-          physical=ramoff
-          entries=[]
-          # The table's logical ramdisk offsets are raw-byte offsets; physical
-          # fragment locations advance by each fragment's individually padded size.
-          # Table itself follows the physically padded ramdisk section and DTB.
-          tableoff=ramoff+align(rsz)+align(dtbsz)
+          ramoff=align(hs); tableoff=ramoff+align(rsz)+align(dtbsz); physical=ramoff; entries=[]
           for i in range(n):
-            e=tableoff+i*esz; size,logical,typ=struct.unpack_from('<III',d,e)
-            name=d[e+12:e+44].split(b'\0',1)[0]
-            assert logical==sum(x[0] for x in entries)
-            assert physical+size <= tableoff-align(dtbsz)
+            e=tableoff+i*esz; size,logical,typ=struct.unpack_from('<III',d,e); name=d[e+12:e+44].split(b'\0',1)[0]
+            assert logical==sum(x[0] for x in entries); assert physical+size <= tableoff-align(dtbsz)
             entries.append((size,logical,typ,name)); physical += align(size)
-          assert physical==tableoff-align(dtbsz)
-          assert tableoff+align(tsz)+bcsz <= len(d)
-          rec=[x for x in entries if x[2]==2 or x[3]==b'recovery']
-          assert len(rec)==1
+          assert physical==tableoff-align(dtbsz); assert tableoff+align(tsz)+bcsz <= len(d)
+          rec=[x for x in entries if x[2]==2 or x[3]==b'recovery']; assert len(rec)==1
           print('valid vendor_boot v4 recovery table; per-fragment physical padding verified')
           PY
           sha256sum /tmp/km5n-twrp-vendor_boot.img
