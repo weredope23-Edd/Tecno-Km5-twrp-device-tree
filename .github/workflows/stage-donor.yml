@@ -1,0 +1,26 @@
+name: Stage CK6n donor for local debugging
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/stage-donor.yml
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Fetch donor
+        run: curl -fL --retry 5 --retry-all-errors 'https://github.com/chunix64/twrp_TECNO-CK6n/releases/download/v1.0.0/TWRP_vendor_boot_v1.0.0.img' -o /tmp/CK6n_TWRP_vendor_boot.img
+      - name: Verify donor
+        run: |
+          set -euxo pipefail
+          stat -c '%s' /tmp/CK6n_TWRP_vendor_boot.img
+          sha256sum /tmp/CK6n_TWRP_vendor_boot.img
+      - name: Upload donor
+        uses: actions/upload-artifact@v4
+        with:
+          name: CK6n-TWRP-v1.0.0-vendor-boot
+          path: /tmp/CK6n_TWRP_vendor_boot.img
+          if-no-files-found: error
