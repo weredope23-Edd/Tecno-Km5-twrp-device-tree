@@ -127,6 +127,22 @@ jobs:
             "$GITHUB_WORKSPACE/" \
             "$TWRP_DIR/device/tecno/km5n/"
 
+          # Use the TWRP-3.7.1-specific configuration instead of the
+          # Android-15/TWRP-16 BoardConfig and device.mk on main.
+          cp -f \
+            "$TWRP_DIR/device/tecno/km5n/configs/twrp371/BoardConfig.mk" \
+            "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
+          cp -f \
+            "$TWRP_DIR/device/tecno/km5n/configs/twrp371/device.mk" \
+            "$TWRP_DIR/device/tecno/km5n/device.mk"
+          cp -f \
+            "$TWRP_DIR/device/tecno/km5n/configs/twrp371/twrp_km5n.mk" \
+            "$TWRP_DIR/device/tecno/km5n/twrp_km5n.mk"
+
+          echo '=== Active TWRP 3.7.1 BoardConfig ==='
+          grep -E 'BOARD_BOOT_HEADER_VERSION|BOARD_MOVE_RECOVERY|BOARD_INCLUDE_RECOVERY|TW_INCLUDE_FBE|TW_LOAD_VENDOR_BOOT|TW_DEVICE_VERSION' \
+            "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
+
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
           set -euxo pipefail
