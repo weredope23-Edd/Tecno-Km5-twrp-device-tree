@@ -3,6 +3,9 @@ name: KM5n Vendor DFE Inspector
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
+  pull_request:
     paths:
       - '.github/workflows/km5n-dfe-vendor-inspect.yml'
       - 'stock/vendor_a.img'
