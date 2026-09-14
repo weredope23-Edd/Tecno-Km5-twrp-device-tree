@@ -14,6 +14,30 @@ jobs:
         uses: rokibhasansagar/slimhub_actions@main
         continue-on-error: true
 
+      # The build-space action must run BEFORE checkout. Mounting it after
+      # checkout hides the checked-out repository and leaves the root fs full.
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        continue-on-error: true
+        with:
+          root-reserve-mb: 512
+          temp-reserve-mb: 128
+          swap-size-mb: 1024
+          remove-dotnet: 'false'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Manual disk cleanup fallback
+        run: |
+          set -eo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/* 2>/dev/null || true
+          sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+          df -h /
+          df -h "$GITHUB_WORKSPACE"
+
       - name: Checkout device tree
         uses: actions/checkout@v4
         with:
@@ -36,31 +60,6 @@ jobs:
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           java -version
-
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
-        continue-on-error: true
-        with:
-          root-reserve-mb: 512
-          temp-reserve-mb: 128
-          swap-size-mb: 1024
-          remove-dotnet: 'false'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
-
-      - name: Manual disk cleanup fallback
-        run: |
-          set -eux
-          # Some runner images no longer ship Docker. Do not let an optional
-          # cleanup command abort the build; reclaim space using filesystem
-          # cleanup that is available on the runner.
-          sudo rm -rf /usr/local/lib/android /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
-          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/* 2>/dev/null || true
-          sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
-          df -h /
-          df -h "$GITHUB_WORKSPACE"
 
       - name: Show runner disk space
         run: |
@@ -137,16 +136,13 @@ jobs:
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
           mkdir -p "$TWRP_DIR/device/tecno/km5n"
 
-          # Copy only the device tree. The previous implementation rsynced
-          # the entire workspace into itself, recursively copying twrp371/.repo
-          # into the device tree and exhausting the build volume.
+          # Copy only the device tree; never copy the whole workspace into
+          # itself, which recursively duplicates twrp371/.repo.
           rsync -a \
             --exclude='.git' \
             "$GITHUB_WORKSPACE/device/tecno/km5n/" \
             "$TWRP_DIR/device/tecno/km5n/"
 
-          # Use the TWRP-3.7.1-specific configuration instead of the
-          # Android-15/TWRP-16 BoardConfig and device.mk on main.
           cp -f \
             "$TWRP_DIR/device/tecno/km5n/configs/twrp371/BoardConfig.mk" \
             "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
@@ -163,7 +159,10 @@ jobs:
 
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
-          set -euxo pipefail
+          # Android's envsetup.sh is not nounset-safe. In particular, its
+          # _gettop_once path can reference TOP before assignment. Keep -u off
+          # while sourcing envsetup/lunch, then enable strict mode for the build.
+          set -eo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
           cd "$TWRP_DIR"
           export ALLOW_MISSING_DEPENDENCIES=true
@@ -176,6 +175,8 @@ jobs:
 
           source build/envsetup.sh
           lunch twrp_km5n-eng
+
+          set -u
           mka vendorbootimage -j2
 
           test -s out/target/product/km5n/vendor_boot.img
