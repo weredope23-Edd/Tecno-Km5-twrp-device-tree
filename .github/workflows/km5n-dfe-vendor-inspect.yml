@@ -141,32 +141,57 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import re
+          import shlex
           from pathlib import Path
           s = Path('vendor_dump_summary.txt').read_text(errors='replace')
+
           def value(*labels, default=''):
+              # dump.erofs output has changed spelling/capitalization between
+              # releases. Match the complete label literally, but allow any
+              # amount of whitespace around the colon.
               for label in labels:
-                  m = re.search(r'^\\s*' + re.escape(label) + r'\\s*:\\s*(.*?)\\s*$', s, re.I | re.M)
+                  pat = r'^\s*' + re.escape(label) + r'\s*:\s*(.*?)\s*$'
+                  m = re.search(pat, s, re.I | re.M)
                   if m:
-                      return m.group(1)
+                      return m.group(1).strip()
               return default
-          uuid = value('Filesystem UUID')
-          block = value('Block size', default='4096')
-          algs = value('Filesystem compr_algs', 'Filesystem compression algorithms')
-          features = value('Filesystem features')
-          # Write shell-escaped assignments. The previous workflow wrote FEATURES
-          # verbatim; spaces in that field made `source erofs_rebuild_hints.txt`
-          # execute the remainder as a command and could abort candidate selection.
-          import shlex
+
+          uuid = value('Filesystem UUID', 'UUID')
+          block = value('Block size', 'Filesystem block size', default='4096')
+          algs = value('Filesystem compr_algs', 'Filesystem compression algorithms', 'Compression algorithms')
+          features = value('Filesystem features', 'Features')
+
+          # Also inspect the whole dump, because some dump.erofs versions print
+          # feature details on separate lines rather than in one feature field.
+          normalized = re.sub(r'[^a-z0-9_ -]+', ' ', s.lower())
+          feature_tokens = []
+          for token in ('ztailpacking', 'fragments', 'dedupe', 'big_pcluster'):
+              if token in normalized.replace(' ', '') or re.search(r'\b' + re.escape(token) + r'\b', normalized):
+                  feature_tokens.append(token)
+          # Recognize the human-readable spelling as well.
+          if re.search(r'big[ _-]+pcluster', normalized):
+              if 'big_pcluster' not in feature_tokens:
+                  feature_tokens.append('big_pcluster')
+
+          # Compression can also appear as "lz4hc"/"lz4" in the superblock
+          # dump without a dedicated compression-algorithms label.
+          if not algs:
+              for candidate in ('lz4hc', 'lz4', 'lzma', 'zstd', 'deflate'):
+                  if re.search(r'\b' + candidate + r'\b', s, re.I):
+                      algs = candidate
+                      break
+
+          features_combined = ' '.join(x for x in [features, *feature_tokens] if x).strip()
           Path('erofs_rebuild_hints.txt').write_text(
-              f'UUID={shlex.quote(uuid)}\\n'
-              f'BLOCK_SIZE={shlex.quote(block)}\\n'
-              f'COMPR_ALGS={shlex.quote(algs)}\\n'
-              f'FEATURES={shlex.quote(features)}\\n'
+              f'UUID={shlex.quote(uuid)}\n'
+              f'BLOCK_SIZE={shlex.quote(block)}\n'
+              f'COMPR_ALGS={shlex.quote(algs)}\n'
+              f'FEATURES={shlex.quote(features_combined)}\n'
           )
           print(f'UUID={uuid}')
           print(f'BLOCK_SIZE={block}')
           print(f'COMPR_ALGS={algs}')
-          print(f'FEATURES={features}')
+          print(f'FEATURES={features_combined}')
           PY
           cat erofs_rebuild_hints.txt
 
@@ -244,7 +269,7 @@ jobs:
 
           cp "$best" vendor_a_dfe_candidate.img
           sha256sum vendor_a_dfe_candidate.img | tee vendor_a_dfe_candidate.sha256
-          printf 'candidate_size=%s\\noriginal_size=%s\\n' "$best_size" "$orig_size" | tee candidate_size.txt
+          printf 'candidate_size=%s\noriginal_size=%s\n' "$best_size" "$orig_size" | tee candidate_size.txt
           dump.erofs -s vendor_a_dfe_candidate.img | tee candidate_dump_summary.txt
           dump.erofs -S vendor_a_dfe_candidate.img | tee candidate_dump_superblock.txt
           fsck.erofs vendor_a_dfe_candidate.img | tee candidate_fsck.txt
