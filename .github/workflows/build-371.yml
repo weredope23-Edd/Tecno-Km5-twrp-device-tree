@@ -10,9 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      # Avoid the third-party runner cleaner: on current Ubuntu images it can
-      # spend many minutes purging packages we do not need. The build-space
-      # action plus the small manual cleanup below are sufficient.
+      # Free the hosted runner before creating the build filesystem. The
+      # Android/TWRP source tree is ~47G plus repo metadata, so this cleanup
+      # must happen before maximize-build-space sizes the build volume.
+      - name: Cleanup runner
+        uses: rokibhasansagar/slimhub_actions@main
+        continue-on-error: true
+
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         continue-on-error: true
@@ -24,8 +28,6 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
-          # The hosted image may not contain docker after cleanup. Do not ask
-          # the action to invoke docker; it is not needed for this build.
           remove-docker-images: 'false'
 
       - name: Manual disk cleanup fallback
@@ -113,9 +115,7 @@ jobs:
 
           set -x
           # Keep repo sync single-threaded. The previous -j1 sync completed,
-          # while -j4 hit the runner's disk ceiling during the concurrent
-          # checkout/fetch phase. The extra time is preferable to losing a
-          # 40+ minute sync to ENOSPC.
+          # while -j4 hit the runner's disk ceiling during concurrent checkout.
           repo sync \
             -c \
             -j1 \
@@ -158,7 +158,6 @@ jobs:
             "$TWRP_DIR/device/tecno/km5n/configs/twrp371/twrp_km5n.mk" \
             "$TWRP_DIR/device/tecno/km5n/twrp_km5n.mk"
 
-          # Android 14 lunch requires an explicit release component.
           cat > "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk" <<'EOF'
           PRODUCT_MAKEFILES := \
               $(LOCAL_DIR)/twrp_km5n.mk
@@ -181,8 +180,6 @@ jobs:
         run: |
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
-          # repo metadata is required for sync only, not for the actual build.
-          # Keeping it can consume most of the hosted runner filesystem.
           du -sh "$TWRP_DIR/.repo" 2>/dev/null || true
           rm -rf "$TWRP_DIR/.repo"
           df -h "$GITHUB_WORKSPACE"
@@ -190,8 +187,6 @@ jobs:
 
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
-          # Android's envsetup.sh is not nounset-safe. Keep -u off while
-          # sourcing envsetup/lunch, then enable strict mode for the build.
           set -eo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
           cd "$TWRP_DIR"
