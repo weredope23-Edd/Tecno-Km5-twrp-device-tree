@@ -71,13 +71,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev
           git clone --depth 1 --branch android-15.0.0_r35 https://android.googlesource.com/platform/external/avb /tmp/avb
-          # Android's newer external/fec mirror no longer ships the legacy
-          # standalone Makefile. Use an Android 15 tag that still contains
-          # the exact Reed-Solomon library layout needed by this helper.
-          git clone --depth 1 --branch android-15.0.0_r17 https://android.googlesource.com/platform/external/fec /tmp/fec
+          # external/fec uses annotated Android release tags. Checkout the
+          # platform-15.0.0_r17 tag explicitly so git does not treat the tag
+          # object itself as a commit and abort the clone with exit 1.
+          git clone --depth 1 https://android.googlesource.com/platform/external/fec /tmp/fec
+          git -C /tmp/fec fetch --depth 1 origin refs/tags/android-platform-15.0.0_r17
+          git -C /tmp/fec checkout --detach FETCH_HEAD
           cd /tmp/fec
-          test -f Makefile
+          test -f makefile.in
+          ./configure --disable-shared
           make -j"$(nproc)" libfec.a
+          test -f libfec.a
           cat > /tmp/km5n-fec.c <<'EOF'
           #define _FILE_OFFSET_BITS 64
           #include <fcntl.h>
@@ -218,6 +222,3 @@ jobs:
             vendor_a_dfe_avb.txt
             vendor_a_avb.txt
             avbtool_add_hashtree_footer.log
-            avbtool_version.txt
-          compression-level: 0
-          retention-days: 14
