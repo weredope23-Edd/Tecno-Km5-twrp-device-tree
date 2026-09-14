@@ -54,27 +54,128 @@ jobs:
           test -f candidate_artifact/vendor_a_dfe_candidate.sha256
           cp candidate_artifact/vendor_a_dfe_candidate.img vendor_a_dfe_candidate.img
           cp candidate_artifact/vendor_a_dfe_candidate.sha256 vendor_a_dfe_candidate.sha256
-          echo 'Artifact archive integrity was verified by actions/download-artifact.'
-          echo 'Candidate files:'
-          ls -lh vendor_a_dfe_candidate.img vendor_a_dfe_candidate.sha256
-          echo 'Stock vendor image:'
-          ls -lh stock/vendor_a.img
           sha256sum stock/vendor_a.img
+          ls -lh vendor_a_dfe_candidate.img stock/vendor_a.img
 
-      - name: Install Android 15 AVB tooling
+      - name: Install Android 15 AVB tooling and compatible FEC helper
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y autoconf automake build-essential libtool
+          sudo apt-get install -y build-essential libssl-dev
           git clone --depth 1 --branch android-15.0.0_r35 https://android.googlesource.com/platform/external/avb /tmp/avb
           git clone --depth 1 https://android.googlesource.com/platform/external/fec /tmp/fec
           cd /tmp/fec
-          ./configure --prefix=/usr/local
-          make -j"$(nproc)"
-          sudo make install
-          sudo ldconfig
+          make -j"$(nproc)" libfec.a
+          cat > /tmp/km5n-fec.c <<'EOF'
+          #define _FILE_OFFSET_BITS 64
+          #include <errno.h>
+          #include <fcntl.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <sys/stat.h>
+          #include <unistd.h>
+          #include <openssl/sha.h>
+          #include "fec.h"
+
+          #define BLOCK 4096ULL
+          #define RSM 255ULL
+          #define MAGIC 0xFECFECFEU
+          #define VERSION 0U
+
+          struct fec_header_disk {
+            uint32_t magic;
+            uint32_t version;
+            uint32_t size;
+            uint32_t roots;
+            uint32_t fec_size;
+            uint64_t inp_size;
+            uint8_t hash[32];
+          };
+
+          static uint64_t div_up(uint64_t x, uint64_t y) { return x / y + (x % y != 0); }
+          static uint64_t fec_size(uint64_t input_size, unsigned roots) {
+            uint64_t blocks = div_up(input_size, BLOCK);
+            uint64_t rounds = div_up(blocks, RSM - roots);
+            return rounds * roots * BLOCK;
+          }
+
+          static int print_size(uint64_t input_size, unsigned roots) {
+            printf("%llu\n", (unsigned long long)(fec_size(input_size, roots) + BLOCK));
+            return 0;
+          }
+
+          static int encode(const char *input_name, const char *output_name, unsigned roots) {
+            struct stat st;
+            int in = open(input_name, O_RDONLY);
+            if (in < 0 || fstat(in, &st) != 0) return 2;
+            uint64_t input_size = (uint64_t)st.st_size;
+            if (!input_size || input_size % BLOCK || roots == 0 || roots >= RSM) return 3;
+            uint64_t blocks = input_size / BLOCK;
+            uint64_t rsn = RSM - roots;
+            uint64_t rounds = div_up(blocks, rsn);
+            uint64_t fsz = rounds * roots * BLOCK;
+            uint8_t *input = malloc((size_t)input_size);
+            uint8_t *fec = calloc(1, (size_t)fsz);
+            if (!input || !fec) return 4;
+            uint8_t *p = input;
+            uint64_t left = input_size;
+            while (left) {
+              ssize_t n = read(in, p, left > (1ULL<<30) ? (1ULL<<30) : (size_t)left);
+              if (n <= 0) return 5;
+              p += n; left -= (uint64_t)n;
+            }
+            close(in);
+            void *rs = init_rs_char(8, 0x11d, 0, 1, (int)roots, 0);
+            if (!rs) return 6;
+            uint8_t data[255];
+            uint64_t logical_end = rounds * rsn * BLOCK;
+            for (uint64_t logical = 0, fec_pos = 0; logical < logical_end; logical += rsn, fec_pos += roots) {
+              for (uint64_t j = 0; j < rsn; ++j) {
+                uint64_t q = logical + j;
+                uint64_t off = q / rsn + (q % rsn) * rounds * BLOCK;
+                data[j] = off < input_size ? input[off] : 0;
+              }
+              encode_rs_char(rs, data, fec + fec_pos);
+            }
+            free_rs_char(rs);
+            uint8_t hash[32];
+            SHA256(fec, (size_t)fsz, hash);
+            uint8_t header[BLOCK];
+            memset(header, 0, sizeof(header));
+            struct fec_header_disk *h = (struct fec_header_disk *)header;
+            h->magic = MAGIC;
+            h->version = VERSION;
+            h->size = (uint32_t)sizeof(*h);
+            h->roots = roots;
+            h->fec_size = (uint32_t)fsz;
+            h->inp_size = input_size;
+            memcpy(h->hash, hash, sizeof(hash));
+            memcpy(header + BLOCK - sizeof(*h), h, sizeof(*h));
+            int out = open(output_name, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            if (out < 0) return 7;
+            if (write(out, fec, (size_t)fsz) != (ssize_t)fsz || write(out, header, BLOCK) != (ssize_t)BLOCK) return 8;
+            close(out);
+            free(input); free(fec);
+            return 0;
+          }
+
+          int main(int argc, char **argv) {
+            if (argc == 5 && !strcmp(argv[1], "--print-fec-size") && !strcmp(argv[3], "--roots")) {
+              return print_size(strtoull(argv[2], NULL, 0), (unsigned)strtoul(argv[4], NULL, 0));
+            }
+            if (argc == 6 && !strcmp(argv[1], "--encode") && !strcmp(argv[2], "--roots")) {
+              return encode(argv[4], argv[5], (unsigned)strtoul(argv[3], NULL, 0));
+            }
+            fprintf(stderr, "usage: fec --print-fec-size SIZE --roots ROOTS | fec --encode --roots ROOTS INPUT OUTPUT\n");
+            return 1;
+          }
+          EOF
+          gcc -O3 -I/tmp/fec /tmp/km5n-fec.c /tmp/fec/libfec.a -lcrypto -o /usr/local/bin/fec
+          chmod 0755 /usr/local/bin/fec
           command -v fec
-          fec --print-fec-size 4096 --roots 2
+          test "$(fec --print-fec-size 4096 --roots 2)" = "12288"
           python3 /tmp/avb/avbtool.py version | tee avbtool_version.txt
 
       - name: Capture stock AVB parameters
@@ -90,44 +191,27 @@ jobs:
               if not m: raise SystemExit(f'missing AVB field: {name}')
               return m.group(1)
           values={
-              'salt':one(r'^\s*Salt:\s+([0-9a-fA-F]+)$','Salt'),
-              'hash_algorithm':one(r'^\s*Hash Algorithm:\s+(\S+)$','Hash Algorithm'),
-              'partition_name':one(r'^\s*Partition Name:\s+(\S+)$','Partition Name'),
-              'fec_roots':one(r'^\s*FEC num roots:\s+(\d+)$','FEC num roots'),
-              'algorithm':one(r'^\s*Algorithm:\s+(\S+)$','Algorithm'),
-              'rollback_index':one(r'^\s*Rollback Index:\s+(\d+)$','Rollback Index'),
-              'rollback_index_location':one(r'^\s*Rollback Index Location:\s+(\d+)$','Rollback Index Location'),
-              'flags':one(r'^\s*Flags:\s+(\d+)$','Flags'),
-              'release':one(r"^\s*Release String:\s+'(.*)'$",'Release String'),
-              'image_size':one(r'^\s*Original image size:\s+(\d+) bytes$','Original image size'),
+            'salt':one(r'^\s*Salt:\s+([0-9a-fA-F]+)$','Salt'),
+            'hash_algorithm':one(r'^\s*Hash Algorithm:\s+(\S+)$','Hash Algorithm'),
+            'partition_name':one(r'^\s*Partition Name:\s+(\S+)$','Partition Name'),
+            'fec_roots':one(r'^\s*FEC num roots:\s+(\d+)$','FEC num roots'),
+            'algorithm':one(r'^\s*Algorithm:\s+(\S+)$','Algorithm'),
+            'rollback_index':one(r'^\s*Rollback Index:\s+(\d+)$','Rollback Index'),
+            'rollback_index_location':one(r'^\s*Rollback Index Location:\s+(\d+)$','Rollback Index Location'),
+            'flags':one(r'^\s*Flags:\s+(\d+)$','Flags'),
+            'release':one(r"^\s*Release String:\s+'(.*)'$",'Release String'),
+            'image_size':one(r'^\s*Original image size:\s+(\d+) bytes$','Original image size'),
           }
           props=re.findall(r"^\s*Prop: ([^ ]+) -> '(.*)'$",s,re.M)
-          expected={
-              'com.android.build.vendor.os_version':'15',
-              'com.android.build.vendor.security_patch':'2026-05-01',
-              'com.android.build.vendor.fingerprint':'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A.240905.015.A2/260422V952:user/release-keys',
-          }
+          expected={'com.android.build.vendor.os_version':'15','com.android.build.vendor.security_patch':'2026-05-01','com.android.build.vendor.fingerprint':'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A.240905.015.A2/260422V952:user/release-keys'}
           got=dict(props)
           for k,v in expected.items():
               if got.get(k) != v: raise SystemExit(f'unexpected stock AVB property {k}: {got.get(k)!r}')
           Path('avb_params.env').write_text('\n'.join([
-              f"AVB_SALT={values['salt']}",
-              f"AVB_HASH_ALGORITHM={values['hash_algorithm']}",
-              f"AVB_PARTITION_NAME={values['partition_name']}",
-              f"AVB_FEC_ROOTS={values['fec_roots']}",
-              f"AVB_ALGORITHM={values['algorithm']}",
-              f"AVB_ROLLBACK_INDEX={values['rollback_index']}",
-              f"AVB_ROLLBACK_INDEX_LOCATION={values['rollback_index_location']}",
-              f"AVB_FLAGS={values['flags']}",
-              f"AVB_STOCK_IMAGE_SIZE={values['image_size']}",
-              'AVB_RELEASE='+repr(values['release']),
+            f"AVB_SALT={values['salt']}",f"AVB_HASH_ALGORITHM={values['hash_algorithm']}",f"AVB_PARTITION_NAME={values['partition_name']}",f"AVB_FEC_ROOTS={values['fec_roots']}",f"AVB_ALGORITHM={values['algorithm']}",f"AVB_ROLLBACK_INDEX={values['rollback_index']}",f"AVB_ROLLBACK_INDEX_LOCATION={values['rollback_index_location']}",f"AVB_FLAGS={values['flags']}",f"AVB_STOCK_IMAGE_SIZE={values['image_size']}",'AVB_RELEASE='+repr(values['release'])
           ]+[f'AVB_PROP_{i}='+repr(k+':'+v) for i,(k,v) in enumerate(props)])+'\n')
-          print(Path('avb_params.env').read_text(),end='')
-          if values['partition_name'] != 'vendor': raise SystemExit('unexpected partition name')
-          if values['hash_algorithm'] != 'sha256': raise SystemExit('unexpected hash algorithm')
-          if values['algorithm'] != 'NONE': raise SystemExit('unexpected AVB signing algorithm')
-          if values['fec_roots'] != '2': raise SystemExit('unexpected FEC roots')
-          if values['image_size'] != '512012288': raise SystemExit('unexpected stock AVB original image size')
+          if values['partition_name']!='vendor' or values['hash_algorithm']!='sha256' or values['algorithm']!='NONE' or values['fec_roots']!='2' or values['image_size']!='512012288': raise SystemExit('unexpected stock AVB geometry/parameters')
+          PY
 
       - name: Calculate AVB capacity and prepare data area
         run: |
@@ -135,55 +219,27 @@ jobs:
           source avb_params.env
           partition_size=521871360
           max_image_size="$(python3 /tmp/avb/avbtool.py add_hashtree_footer --partition_size "$partition_size" --hash_algorithm "$AVB_HASH_ALGORITHM" --block_size 4096 --fec_num_roots "$AVB_FEC_ROOTS" --calc_max_image_size)"
-          echo "AVB calculated maximum image size: $max_image_size"
           candidate_size="$(stat -c '%s' vendor_a_dfe_candidate.img)"
-          echo "Raw candidate size: $candidate_size"
-          echo "Required stock data-area size: $AVB_STOCK_IMAGE_SIZE"
-          if [ "$candidate_size" -gt "$AVB_STOCK_IMAGE_SIZE" ]; then
-            echo 'Candidate is larger than the stock AVB data area.'
-            exit 1
-          fi
-          if [ "$AVB_STOCK_IMAGE_SIZE" -gt "$max_image_size" ]; then
-            echo 'Stock data-area size does not fit this AVB partition geometry.'
-            exit 1
-          fi
+          test "$candidate_size" -le "$AVB_STOCK_IMAGE_SIZE"
+          test "$AVB_STOCK_IMAGE_SIZE" -le "$max_image_size"
           cp vendor_a_dfe_candidate.img vendor_a_dfe.img
-          if [ "$candidate_size" -lt "$AVB_STOCK_IMAGE_SIZE" ]; then
-            truncate -s "$AVB_STOCK_IMAGE_SIZE" vendor_a_dfe.img
-          fi
+          truncate -s "$AVB_STOCK_IMAGE_SIZE" vendor_a_dfe.img
           stat -c 'Prepared image size: %s bytes' vendor_a_dfe.img
 
       - name: Add AVB hashtree, FEC and footer
         run: |
           set -euo pipefail
           source avb_params.env
-          partition_size=521871360
           props=()
           while IFS= read -r line; do
             [[ "$line" == AVB_PROP_* ]] || continue
-            val="${line#*=}"
-            val="${val#\'}"; val="${val%\'}"
+            val="${line#*=}"; val="${val#\'}"; val="${val%\'}"
             props+=(--prop "$val")
           done < avb_params.env
-          args=(add_hashtree_footer
-                --image vendor_a_dfe.img
-                --partition_size "$partition_size"
-                --partition_name "$AVB_PARTITION_NAME"
-                --hash_algorithm "$AVB_HASH_ALGORITHM"
-                --block_size 4096
-                --salt "$AVB_SALT"
-                --algorithm "$AVB_ALGORITHM"
-                --rollback_index "$AVB_ROLLBACK_INDEX"
-                --rollback_index_location "$AVB_ROLLBACK_INDEX_LOCATION"
-                --flags "$AVB_FLAGS"
-                --fec_num_roots "$AVB_FEC_ROOTS"
-                --internal_release_string "$AVB_RELEASE")
+          args=(add_hashtree_footer --image vendor_a_dfe.img --partition_size 521871360 --partition_name "$AVB_PARTITION_NAME" --hash_algorithm "$AVB_HASH_ALGORITHM" --block_size 4096 --salt "$AVB_SALT" --algorithm "$AVB_ALGORITHM" --rollback_index "$AVB_ROLLBACK_INDEX" --rollback_index_location "$AVB_ROLLBACK_INDEX_LOCATION" --flags "$AVB_FLAGS" --fec_num_roots "$AVB_FEC_ROOTS" --internal_release_string "$AVB_RELEASE")
           args+=("${props[@]}")
-          printf 'Running: avbtool.py'; printf ' %q' "${args[@]}"; printf '\n'
           python3 /tmp/avb/avbtool.py "${args[@]}" 2>&1 | tee avbtool_add_hashtree_footer.log
-          actual="$(stat -c '%s' vendor_a_dfe.img)"
-          echo "Final image size after AVB: $actual"
-          test "$actual" = "$partition_size"
+          test "$(stat -c '%s' vendor_a_dfe.img)" = "521871360"
           sha256sum vendor_a_dfe.img | tee vendor_a_dfe.sha256
 
       - name: Validate final AVB image
@@ -194,24 +250,21 @@ jobs:
           import re
           from pathlib import Path
           s=Path('vendor_a_dfe_avb.txt').read_text()
-          def need(p,name):
-              if not re.search(p,s,re.M): raise SystemExit('AVB validation failed: '+name)
-          need(r'^\s*Footer version:\s+1\.0$', 'footer version')
-          need(r'^\s*Original image size:\s+512012288 bytes$', 'original image size')
-          need(r'^\s*Algorithm:\s+NONE$', 'algorithm')
-          need(r'^\s*FEC num roots:\s+2$', 'FEC roots')
-          need(r'^\s*Hash Algorithm:\s+sha256$', 'hash algorithm')
-          need(r'^\s*Partition Name:\s+vendor$', 'partition name')
-          need(r"^\s*Prop: com\.android\.build\.vendor\.os_version -> '15'$", 'OS version')
-          need(r"^\s*Prop: com\.android\.build\.vendor\.security_patch -> '2026-05-01'$", 'security patch')
-          need(r"^\s*Prop: com\.android\.build\.vendor\.fingerprint -> 'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A\.240905\.015\.A2/260422V952:user/release-keys'$", 'fingerprint')
-          m=re.search(r'^\s*Image Size:\s+(\d+) bytes$',s,re.M)
-          if not m or int(m.group(1)) != 512012288: raise SystemExit('hashtree descriptor image size mismatch')
-          tree=re.search(r'^\s*Tree Size:\s+(\d+) bytes$',s,re.M)
-          fec=re.search(r'^\s*FEC size:\s+(\d+) bytes$',s,re.M)
-          if not tree or not fec: raise SystemExit('missing hashtree/FEC sizing')
-          print(f'Hashtree size: {tree.group(1)} bytes')
-          print(f'FEC size: {fec.group(1)} bytes')
+          checks=[
+            (r'^\s*Footer version:\s+1\.0$','footer'),
+            (r'^\s*Original image size:\s+512012288 bytes$','original image size'),
+            (r'^\s*Algorithm:\s+NONE$','algorithm'),
+            (r'^\s*FEC num roots:\s+2$','FEC roots'),
+            (r'^\s*Hash Algorithm:\s+sha256$','hash algorithm'),
+            (r'^\s*Partition Name:\s+vendor$','partition'),
+            (r"^\s*Prop: com\.android\.build\.vendor\.os_version -> '15'$",'OS version'),
+            (r"^\s*Prop: com\.android\.build\.vendor\.security_patch -> '2026-05-01'$",'security patch'),
+            (r"^\s*Prop: com\.android\.build\.vendor\.fingerprint -> 'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A\.240905\.015\.A2/260422V952:user/release-keys'$",'fingerprint'),
+            (r'^\s*Image Size:\s+512012288 bytes$','hashtree image size'),
+          ]
+          for p,n in checks:
+              if not re.search(p,s,re.M): raise SystemExit('AVB validation failed: '+n)
+          if not re.search(r'^\s*Tree Size:\s+\d+ bytes$',s,re.M) or not re.search(r'^\s*FEC size:\s+\d+ bytes$',s,re.M): raise SystemExit('missing hashtree/FEC sizing')
           PY
 
       - name: Upload AVB-valid DFE image
