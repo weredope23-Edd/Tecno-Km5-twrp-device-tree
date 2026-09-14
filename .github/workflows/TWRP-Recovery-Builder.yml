@@ -129,8 +129,14 @@ jobs:
 
     - name: Clone Device Tree
       run: |
+        set -euxo pipefail
         cd workspace
-        git clone --depth=1 "${{ github.event.inputs.DEVICE_TREE }}" -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" "./${{ github.event.inputs.DEVICE_PATH }}"
+        TREE_URL="${{ github.event.inputs.DEVICE_TREE }}"
+        if [[ "$TREE_URL" == "https://github.com/danielstudy101-spec/Tecno-km5n-twrp"* ]]; then
+          git clone --depth=1 "https://x-access-token:${GITHUB_TOKEN}@github.com/danielstudy101-spec/Tecno-km5n-twrp.git" -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" "./${{ github.event.inputs.DEVICE_PATH }}"
+        else
+          git clone --depth=1 "$TREE_URL" -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" "./${{ github.event.inputs.DEVICE_PATH }}"
+        fi
         cd "${{ github.event.inputs.DEVICE_PATH }}"
         echo "COMMIT_ID=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
