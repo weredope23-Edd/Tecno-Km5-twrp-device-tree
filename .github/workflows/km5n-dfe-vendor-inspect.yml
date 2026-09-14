@@ -143,21 +143,30 @@ jobs:
           import re
           from pathlib import Path
           s = Path('vendor_dump_summary.txt').read_text(errors='replace')
-          def value(label, default=''):
-              m = re.search(r'^\s*' + re.escape(label) + r'\s*:\s*(.*?)\s*$', s, re.I | re.M)
-              return m.group(1) if m else default
+          def value(*labels, default=''):
+              for label in labels:
+                  m = re.search(r'^\\s*' + re.escape(label) + r'\\s*:\\s*(.*?)\\s*$', s, re.I | re.M)
+                  if m:
+                      return m.group(1)
+              return default
           uuid = value('Filesystem UUID')
-          block = value('Block size', '4096')
-          algs = value('Filesystem compr_algs') or value('Filesystem compression algorithms')
+          block = value('Block size', default='4096')
+          algs = value('Filesystem compr_algs', 'Filesystem compression algorithms')
           features = value('Filesystem features')
-          if not features:
-              m = re.search(r'^\s*Filesystem features\s*:\s*(.*?)\s*$', s, re.I | re.M)
-              features = m.group(1) if m else ''
+          # Write shell-escaped assignments. The previous workflow wrote FEATURES
+          # verbatim; spaces in that field made `source erofs_rebuild_hints.txt`
+          # execute the remainder as a command and could abort candidate selection.
+          import shlex
+          Path('erofs_rebuild_hints.txt').write_text(
+              f'UUID={shlex.quote(uuid)}\\n'
+              f'BLOCK_SIZE={shlex.quote(block)}\\n'
+              f'COMPR_ALGS={shlex.quote(algs)}\\n'
+              f'FEATURES={shlex.quote(features)}\\n'
+          )
           print(f'UUID={uuid}')
           print(f'BLOCK_SIZE={block}')
           print(f'COMPR_ALGS={algs}')
           print(f'FEATURES={features}')
-          Path('erofs_rebuild_hints.txt').write_text(f'UUID={uuid}\nBLOCK_SIZE={block}\nCOMPR_ALGS={algs}\nFEATURES={features}\n')
           PY
           cat erofs_rebuild_hints.txt
 
@@ -166,19 +175,19 @@ jobs:
         continue-on-error: true
         shell: bash
         run: |
-          set -uo pipefail
+          set -euo pipefail
           source erofs_rebuild_hints.txt
           orig_size="$(stat -c '%s' stock/vendor_a.img)"
           uuid_arg=()
           if [[ "${UUID:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then uuid_arg=(-U "$UUID"); fi
 
-          # Only request on-disk features that the stock image actually advertises.
           feature_args=()
-          if [[ " ${FEATURES:-} " =~ (^|[[:space:]])ztailpacking([[:space:]]|$) ]]; then feature_args+=(-Eztailpacking); fi
-          if [[ " ${FEATURES:-} " =~ (^|[[:space:]])fragments([[:space:]]|$) ]]; then feature_args+=(-Efragments); fi
-          if [[ " ${FEATURES:-} " =~ (^|[[:space:]])dedupe([[:space:]]|$) ]]; then feature_args+=(-Ededupe); fi
+          feature_text=" ${FEATURES:-} "
+          [[ "$feature_text" =~ (^|[[:space:]])ztailpacking([[:space:]]|$) ]] && feature_args+=(-Eztailpacking)
+          [[ "$feature_text" =~ (^|[[:space:]])fragments([[:space:]]|$) ]] && feature_args+=(-Efragments)
+          [[ "$feature_text" =~ (^|[[:space:]])dedupe([[:space:]]|$) ]] && feature_args+=(-Ededupe)
           big_pcluster=0
-          if [[ " ${FEATURES:-} " =~ (^|[[:space:]])big_pcluster([[:space:]]|$) ]]; then big_pcluster=1; fi
+          [[ "$feature_text" =~ (^|[[:space:]])big_pcluster([[:space:]]|$) ]] && big_pcluster=1
 
           : > rebuild_attempts.txt
           best=''
@@ -189,14 +198,14 @@ jobs:
             clusters=(4096)
           fi
 
-          # Match the stock algorithm first, then fall back to known Android-safe EROFS choices.
           stock_alg="${COMPR_ALGS%%:*}"
           compressors=()
           case "$stock_alg" in
             lz4hc) compressors=('lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4') ;;
             lz4) compressors=('lz4,9' 'lz4' 'lz4hc,12' 'lz4hc,9') ;;
             lzma) compressors=('lzma,9' 'lzma,6' 'lz4hc,12' 'lz4hc,9') ;;
-            *) compressors=('lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4' 'lzma,6' 'lzma,9') ;;
+            zstd) compressors=('zstd,19' 'lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4') ;;
+            *) compressors=('lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4' 'lzma,6' 'lzma,9' 'zstd,19') ;;
           esac
           compressors+=("")
 
@@ -235,7 +244,7 @@ jobs:
 
           cp "$best" vendor_a_dfe_candidate.img
           sha256sum vendor_a_dfe_candidate.img | tee vendor_a_dfe_candidate.sha256
-          printf 'candidate_size=%s\noriginal_size=%s\n' "$best_size" "$orig_size" | tee candidate_size.txt
+          printf 'candidate_size=%s\\noriginal_size=%s\\n' "$best_size" "$orig_size" | tee candidate_size.txt
           dump.erofs -s vendor_a_dfe_candidate.img | tee candidate_dump_summary.txt
           dump.erofs -S vendor_a_dfe_candidate.img | tee candidate_dump_superblock.txt
           fsck.erofs vendor_a_dfe_candidate.img | tee candidate_fsck.txt
