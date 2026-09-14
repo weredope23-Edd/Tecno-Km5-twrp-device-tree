@@ -33,35 +33,25 @@ jobs:
           echo "Using source run $run_id"
 
       - name: Download candidate artifact from source run
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RUN_ID: ${{ steps.source.outputs.run_id }}
+        uses: actions/download-artifact@v4
+        with:
+          name: km5n-vendor-dfe-candidate
+          path: candidate_artifact
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.source.outputs.run_id }}
+
+      - name: Verify candidate artifact
         run: |
           set -euo pipefail
-          repo="$GITHUB_REPOSITORY"
-          api="https://api.github.com/repos/$repo/actions/runs/$RUN_ID/artifacts"
-          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$api" -o artifacts.json
-          artifact_id="$(python3 - <<'PY'
-          import json
-          d=json.load(open('artifacts.json'))
-          for a in d.get('artifacts',[]):
-              if a.get('name') == 'km5n-vendor-dfe-candidate' and not a.get('expired'):
-                  print(a['id']); break
-          else: raise SystemExit('km5n-vendor-dfe-candidate artifact not found')
-          PY
-          )"
-          echo "artifact_id=$artifact_id" | tee source_artifact.txt
-          curl -fsSL -L -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
-            "https://api.github.com/repos/$repo/actions/artifacts/$artifact_id/zip" -o candidate_artifact.zip
-          rm -rf candidate_artifact
-          mkdir candidate_artifact
-          unzip -q candidate_artifact.zip -d candidate_artifact
           test -f candidate_artifact/vendor_a_dfe_candidate.img
           test -f candidate_artifact/vendor_a_avb.txt
+          test -f candidate_artifact/vendor_a_dfe_candidate.sha256
           cp candidate_artifact/vendor_a_dfe_candidate.img .
           cp candidate_artifact/vendor_a_avb.txt .
           cp candidate_artifact/vendor_a_dfe_candidate.sha256 .
-          sha256sum -c vendor_a_dfe_candidate.sha256 || sha256sum vendor_a_dfe_candidate.img
+          sha256sum -c vendor_a_dfe_candidate.sha256
+          stat -c 'Candidate size: %s bytes' vendor_a_dfe_candidate.img
 
       - name: Install Android 15 AVB tooling
         run: |
