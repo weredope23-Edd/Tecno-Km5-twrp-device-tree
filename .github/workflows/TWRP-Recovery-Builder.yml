@@ -1,0 +1,230 @@
+name: TWRP Recovery Builder 2024 - KM5n
+
+on:
+  workflow_dispatch:
+    inputs:
+      MANIFEST_BRANCH:
+        description: 'TWRP Minimal-Manifest Branch'
+        required: true
+        default: 'twrp-14'
+        type: choice
+        options:
+        - twrp-14
+        - twrp-12.1
+        - twrp-11
+        - twrp-9.0
+      DEVICE_TREE:
+        description: 'Custom Recovery Tree'
+        required: true
+        default: 'https://github.com/danielstudy101-spec/Tecno-km5n-twrp.git'
+      DEVICE_TREE_BRANCH:
+        description: 'Custom Recovery Tree Branch'
+        required: true
+        default: 'main'
+      DEVICE_PATH:
+        description: 'Specify your Device Path'
+        required: true
+        default: 'device/tecno/km5n'
+      DEVICE_NAME:
+        description: 'Specify your Device Codename'
+        required: true
+        default: 'km5n'
+      BUILD_TARGET:
+        description: 'Specify your Build Target'
+        required: true
+        default: 'vendorboot'
+        type: choice
+        options:
+        - boot
+        - recovery
+        - vendorboot
+      LDCHECK:
+        description: 'Path of blobs to check'
+        required: true
+        default: 'vendor/bin/hw/android.hardware.security.keymint@3.0-service.trustonic'
+      RECOVERY_TAR:
+        description: 'Release Recovery.tar For Samsung devices'
+        required: false
+        default: false
+        type: boolean
+      RECOVERY_INSTALLER:
+        description: 'Include recovery installer.zip'
+        required: true
+        default: false
+        type: boolean
+
+jobs:
+  build:
+    name: Build TWRP by ${{ github.actor }}
+    runs-on: ubuntu-22.04
+    if: github.event.repository.owner.id == github.event.sender.id
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    permissions:
+      contents: write
+    steps:
+    - name: Check Out
+      uses: actions/checkout@v4
+
+    - name: Display Inputs
+      run: |
+        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
+        echo "Device Tree: ${{ github.event.inputs.DEVICE_TREE }}"
+        echo "Device Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
+        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
+        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
+        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}image"
+        echo "LDCHECK: ${{ github.event.inputs.LDCHECK }}"
+
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
+
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 24
+
+    - name: Prepare the environment
+      run: |
+        sudo apt update
+        sudo apt -y install gperf gcc-multilib g++-multilib lib32ncurses5-dev x11proto-core-dev lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-12-dev libtinfo5 libgflags-dev
+        sudo add-apt-repository universe
+        sudo apt -y install libncurses5
+
+    - name: Install OpenJDK 17
+      uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: 17
+
+    - name: Install Git-Repo
+      run: |
+        mkdir -p ~/bin
+        curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        sudo ln -sf ~/bin/repo /usr/bin/repo
+
+    - name: Check Manifest Branch
+      id: manifest
+      shell: bash
+      run: |
+        if [[ "${{ github.event.inputs.MANIFEST_BRANCH }}" == "twrp-14" || "${{ github.event.inputs.MANIFEST_BRANCH }}" == "twrp-12.1" || "${{ github.event.inputs.MANIFEST_BRANCH }}" == "twrp-11" ]]; then
+          echo 'url=https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git' >> "$GITHUB_OUTPUT"
+        else
+          echo 'url=https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni.git' >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Initialize Repo
+      run: |
+        mkdir workspace
+        cd workspace
+        git config --global user.name "TWRP Recovery Builder"
+        git config --global user.email "actions@github.com"
+        repo init --depth=1 -u "${{ steps.manifest.outputs.url }}" -b "${{ github.event.inputs.MANIFEST_BRANCH }}"
+
+    - name: Repo Sync
+      run: |
+        cd workspace
+        repo sync -j2 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5
+
+    - name: Clone Device Tree
+      run: |
+        cd workspace
+        git clone --depth=1 "${{ github.event.inputs.DEVICE_TREE }}" -b "${{ github.event.inputs.DEVICE_TREE_BRANCH }}" "./${{ github.event.inputs.DEVICE_PATH }}"
+        cd "${{ github.event.inputs.DEVICE_PATH }}"
+        echo "COMMIT_ID=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+    - name: Check Build Makefile
+      run: |
+        cd workspace
+        if [ -f "${{ github.event.inputs.DEVICE_PATH }}/twrp_${{ github.event.inputs.DEVICE_NAME }}.mk" ]; then
+          echo "DEVICE_MAKEFILE=twrp_${{ github.event.inputs.DEVICE_NAME }}" >> "$GITHUB_ENV"
+        elif [ -f "${{ github.event.inputs.DEVICE_PATH }}/omni_${{ github.event.inputs.DEVICE_NAME }}.mk" ]; then
+          echo "DEVICE_MAKEFILE=omni_${{ github.event.inputs.DEVICE_NAME }}" >> "$GITHUB_ENV"
+        else
+          echo "No recovery makefile found!"
+          exit 1
+        fi
+
+    - name: Verify KM5n TWRP 14 configuration
+      run: |
+        set -euxo pipefail
+        cd workspace
+        grep -q 'TARGET_BOARD_PLATFORM := mt6768' "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk"
+        grep -q 'BOARD_BOOT_HEADER_VERSION := 4' "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk"
+        grep -q 'BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT := true' "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk"
+        grep -q 'TW_LOAD_VENDOR_BOOT_MODULES := true' "${{ github.event.inputs.DEVICE_PATH }}/BoardConfig.mk"
+        test -d "${{ github.event.inputs.DEVICE_PATH }}/recovery/root/lib/modules"
+        test "$(find "${{ github.event.inputs.DEVICE_PATH }}/recovery/root/lib/modules" -name '*.ko' | wc -l)" -ge 100
+
+    - name: Build Image
+      run: |
+        set -euxo pipefail
+        cd workspace
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        lunch "${DEVICE_MAKEFILE}-eng"
+        make clean
+        make "${{ github.event.inputs.BUILD_TARGET }}image" -j2
+        echo "Done building ${{ github.event.inputs.BUILD_TARGET }}.img"
+
+    - name: Validate vendor_boot output
+      if: github.event.inputs.BUILD_TARGET == 'vendorboot'
+      run: |
+        set -euxo pipefail
+        cd workspace
+        IMG="out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img"
+        test -s "$IMG"
+        stat -c '%n %s bytes' "$IMG"
+        bash "${{ github.event.inputs.DEVICE_PATH }}/scripts/validate_vendor_boot.sh" "$IMG"
+        bash "${{ github.event.inputs.DEVICE_PATH }}/scripts/audit_twrp_output.sh" "out/target/product/${{ github.event.inputs.DEVICE_NAME }}"
+
+    - name: Set Build Date
+      run: echo "BUILD_DATE=$(date +%Y%m%d)" >> "$GITHUB_ENV"
+
+    - name: Check if Recovery Exists
+      run: |
+        cd workspace
+        if [ -f "out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery.img" ]; then
+          echo "RECOVERY_TYPE=recovery" >> "$GITHUB_ENV"
+        elif [ -f "out/target/product/${{ github.event.inputs.DEVICE_NAME }}/boot.img" ]; then
+          echo "RECOVERY_TYPE=boot" >> "$GITHUB_ENV"
+        elif [ -f "out/target/product/${{ github.event.inputs.DEVICE_NAME }}/vendor_boot.img" ]; then
+          echo "RECOVERY_TYPE=vendor_boot" >> "$GITHUB_ENV"
+        else
+          echo "No recovery image found"
+          exit 1
+        fi
+
+    - name: Include Recovery Installer
+      if: github.event.inputs.RECOVERY_INSTALLER == 'true'
+      run: |
+        cd "workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/"
+        wget https://github.com/kinguser981/recovery-installer/releases/download/zip/recovery-installer.zip
+        zip -ur recovery-installer.zip "${RECOVERY_TYPE}.img"
+      continue-on-error: true
+
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: |
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ env.RECOVERY_TYPE }}.img
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery-installer.zip
+        name: Unofficial TWRP 14 for ${{ github.event.inputs.DEVICE_NAME }} // ${{ env.BUILD_DATE }}
+        tag_name: ${{ github.run_id }}
+        body: |
+          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
+          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+          Device Tree: ${{ github.event.inputs.DEVICE_TREE }}
+          Device Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}
+          Commit: ${{ env.COMMIT_ID }}
+
+    - name: Checking For Missing Dependencies
+      run: |
+        set +e
+        cd tools
+        mv -n libneeds "${GITHUB_WORKSPACE}/workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery/root/"
+        mv -n ldcheck "${GITHUB_WORKSPACE}/workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery/root/"
+        cd "${GITHUB_WORKSPACE}/workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/recovery/root"
+        python3 ldcheck -p system/lib64:vendor/lib64:system/lib:vendor/lib -d "${{ github.event.inputs.LDCHECK }}"
+      continue-on-error: true
