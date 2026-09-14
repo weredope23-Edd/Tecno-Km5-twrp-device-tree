@@ -21,7 +21,6 @@ jobs:
         with:
           lfs: true
           fetch-depth: 1
-
       - name: Verify stock vendor image
         run: |
           set -euo pipefail
@@ -29,13 +28,11 @@ jobs:
           sha256sum stock/vendor_a.img | tee vendor_a.sha256
           test "$(sha256sum stock/vendor_a.img | awk '{print $1}')" = "b2d47a2d341f651ec4ad175273f07d987f2c068b94d46878bba589642793ef38"
           stat -c 'vendor_a.img: %s bytes' stock/vendor_a.img | tee vendor_size.txt
-
       - name: Install EROFS build dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y autoconf automake autopoint libtool pkg-config uuid-dev zlib1g-dev liblz4-dev liblzma-dev libzstd-dev libfuse-dev git build-essential python3 python3-pip
-
       - name: Build modern liblzma
         run: |
           set -euo pipefail
@@ -47,7 +44,6 @@ jobs:
           sudo make install
           sudo ldconfig
           pkg-config --modversion liblzma
-
       - name: Build EROFS v1.9.3
         run: |
           set -euo pipefail
@@ -65,14 +61,12 @@ jobs:
           fsck.erofs -V
           dump.erofs -V
           mkfs.erofs --help | tee mkfs_erofs_help.txt
-
       - name: Inspect stock EROFS
         run: |
           set -euo pipefail
           dump.erofs -s stock/vendor_a.img | tee vendor_dump_summary.txt
           dump.erofs -S stock/vendor_a.img | tee vendor_dump_superblock.txt
           fsck.erofs stock/vendor_a.img | tee vendor_fsck.txt
-
       - name: Extract vendor filesystem
         run: |
           set -euo pipefail
@@ -83,7 +77,6 @@ jobs:
           cp -a extracted_vendor/. modified_vendor/
           cp extracted_vendor/etc/fstab.mt6768 stock_fstab.mt6768
           cat stock_fstab.mt6768
-
       - name: Apply DFE fstab change
         run: |
           set -euo pipefail
@@ -108,7 +101,7 @@ jobs:
                       parts[3]+=',encryptable=/dev/block/by-name/metadata'
                       line=' '.join(parts)
               out.append(line)
-          s='\n'.join(out)+('\\n' if s.endswith('\\n') else '')
+          s='\n'.join(out)+('\n' if s.endswith('\n') else '')
           if s==old: raise SystemExit('DFE edit made no changes')
           p.write_text(s)
           PY
@@ -117,8 +110,7 @@ jobs:
           ! grep -q 'inlinecrypt' modified_vendor/etc/fstab.mt6768
           ! grep -q 'fileencryption=aes-256-xts:aes-256-cts:v2' modified_vendor/etc/fstab.mt6768
           ! grep -q 'keydirectory=/metadata/vold/metadata_encryption' modified_vendor/etc/fstab.mt6768
-          diff -u stock_fstab.mt6768 modified_vendor/etc/fstab.mt6768 | tee fstab_dfe.patch
-
+          diff -u stock_fstab.mt6768 modified_vendor/etc/fstab.mt6768 | tee fstab_dfe.patch || true
       - name: Derive safe EROFS rebuild hints
         run: |
           set -euo pipefail
@@ -134,8 +126,7 @@ jobs:
           uuid=field(['Filesystem UUID','UUID'])
           block_raw=field(['Block size','Filesystem block size'],'4096')
           m=re.search(r'\d+',block_raw); block=m.group(0) if m else '4096'
-          if block not in ('4096','8192','16384','32768','65536'):
-              block='4096'
+          if block not in ('4096','8192','16384','32768','65536'): block='4096'
           alg=field(['Filesystem compr_algs','Filesystem compression algorithms','Compression algorithms'])
           low=alg.lower()
           if 'lz4hc' in low: alg='lz4hc'
@@ -155,7 +146,6 @@ jobs:
           Path('erofs_rebuild_hints.txt').write_text('\n'.join([f'UUID={uuid}',f'BLOCK_SIZE={block}',f'COMPR_ALG={alg}',f'BIG_PCLUSTER={int(big)}',f'FEATURES={" ".join(feats)}'])+'\n')
           print(Path('erofs_rebuild_hints.txt').read_text(),end='')
           PY
-
       - name: Build validated DFE EROFS candidate
         id: build_candidate
         continue-on-error: true
@@ -165,9 +155,6 @@ jobs:
           orig_size=$(stat -c '%s' stock/vendor_a.img)
           : > rebuild_attempts.txt
           best=''; best_size=0
-          # Try stock-compatible optional features first, then a conservative
-          # feature-free rebuild. This prevents one unsupported feature hint
-          # from killing every candidate attempt.
           feature_sets=()
           stock_features=''
           [[ " ${FEATURES:-} " =~ [[:space:]]ztailpacking[[:space:]] ]] && stock_features+='ztailpacking,'
@@ -227,7 +214,6 @@ jobs:
           dump.erofs -s vendor_a_dfe_candidate.img | tee candidate_dump_summary.txt
           dump.erofs -S vendor_a_dfe_candidate.img | tee candidate_dump_superblock.txt
           fsck.erofs vendor_a_dfe_candidate.img | tee candidate_fsck.txt
-
       - name: Package diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -253,7 +239,6 @@ jobs:
             candidate_dump_summary.txt
             candidate_dump_superblock.txt
             candidate_fsck.txt
-
       - name: Inspect AVB footer
         if: steps.build_candidate.outcome == 'success'
         run: |
@@ -261,7 +246,6 @@ jobs:
           git clone --depth 1 https://android.googlesource.com/platform/external/avb /tmp/avb
           python3 /tmp/avb/avbtool.py info_image --image stock/vendor_a.img | tee vendor_a_avb.txt
           python3 /tmp/avb/avbtool.py info_image --image vendor_a_dfe_candidate.img | tee vendor_a_dfe_candidate_avb.txt || true
-
       - name: Upload successful candidate
         if: steps.build_candidate.outcome == 'success'
         uses: actions/upload-artifact@v4
@@ -279,7 +263,6 @@ jobs:
             stock_fstab.mt6768
             fstab_dfe.patch
             erofs_rebuild_hints.txt
-
       - name: Fail if no validated candidate exists
         if: steps.build_candidate.outcome != 'success'
         run: |
