@@ -12,7 +12,7 @@ on:
 
 jobs:
   inspect:
-    name: Inspect stock vendor_a.img
+    name: Inspect and build stock vendor_a.img DFE candidate
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -30,7 +30,7 @@ jobs:
           test -f stock/vendor_a.img
           sha256sum stock/vendor_a.img | tee vendor_a.sha256
           test "$(sha256sum stock/vendor_a.img | awk '{print $1}')" = "b2d47a2d341f651ec4ad175273f07d987f2c068b94d46878bba589642793ef38"
-          stat -c 'vendor_a.img: %s bytes' stock/vendor_a.img
+          stat -c 'vendor_a.img: %s bytes' stock/vendor_a.img | tee vendor_size.txt
 
       - name: Install EROFS build dependencies
         shell: bash
@@ -39,7 +39,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             autoconf automake autopoint libtool pkg-config uuid-dev zlib1g-dev \
-            liblz4-dev liblzma-dev libzstd-dev libfuse-dev git build-essential
+            liblz4-dev liblzma-dev libzstd-dev libfuse-dev git build-essential \
+            python3 python3-pip
 
       - name: Build a modern liblzma for EROFS MicroLZMA support
         shell: bash
@@ -72,6 +73,7 @@ jobs:
           sudo install -m 0755 mkfs/mkfs.erofs /usr/local/bin/mkfs.erofs
           /usr/local/bin/fsck.erofs -V
           /usr/local/bin/dump.erofs -V || true
+          /usr/local/bin/mkfs.erofs --help | tee mkfs_erofs_help.txt
 
       - name: Inspect EROFS metadata and integrity
         shell: bash
@@ -88,31 +90,159 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf extracted_vendor
-          mkdir -p extracted_vendor
+          rm -rf extracted_vendor modified_vendor
+          mkdir -p extracted_vendor modified_vendor
           fsck.erofs --extract=extracted_vendor stock/vendor_a.img
           test -f extracted_vendor/etc/fstab.mt6768
+          cp -a extracted_vendor/. modified_vendor/
           cp extracted_vendor/etc/fstab.mt6768 stock_fstab.mt6768
           echo '--- stock vendor/etc/fstab.mt6768 ---'
           cat stock_fstab.mt6768
 
-      - name: Audit encryption entry
+      - name: Audit and apply Hovatek-style DFE fstab change
         shell: bash
         run: |
           set -euo pipefail
-          echo '--- /data fstab lines ---'
-          grep -nE '(^|[[:space:]])/data([[:space:]]|$)' stock_fstab.mt6768 || true
-          echo '--- encryption-related tokens ---'
-          grep -nE 'inlinecrypt|fileencryption|encryptable|keydirectory|metadata' stock_fstab.mt6768 || true
+          data_line="$(grep -E '(^|[[:space:]])/data([[:space:]]|$)' stock_fstab.mt6768 | head -n1 || true)"
+          test -n "$data_line"
+          printf '%s\n' "$data_line" | tee stock_data_fstab_line.txt
+          grep -q 'inlinecrypt' stock_fstab.mt6768
+          grep -q 'fileencryption=aes-256-xts:aes-256-cts:v2' stock_fstab.mt6768
+          grep -q 'keydirectory=/metadata/vold/metadata_encryption' stock_fstab.mt6768
+          grep -q '/metadata' stock_fstab.mt6768
 
-      - name: Upload inspection report
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('modified_vendor/etc/fstab.mt6768')
+          s = p.read_text()
+          old = s
+          s = s.replace(',inlinecrypt', '')
+          s = s.replace(',fileencryption=aes-256-xts:aes-256-cts:v2', '')
+          s = s.replace(',keydirectory=/metadata/vold/metadata_encryption', '')
+          s = s.replace('fileencryption=aes-256-xts:aes-256-cts:v2,', '')
+          s = s.replace('keydirectory=/metadata/vold/metadata_encryption,', '')
+          lines = []
+          for line in s.splitlines():
+              if '/data' in line.split():
+                  if 'encryptable=/dev/block/by-name/metadata' not in line:
+                      parts = line.split()
+                      if len(parts) >= 4:
+                          opts = parts[3].split(',')
+                          if 'encryptable=/dev/block/by-name/metadata' not in opts:
+                              opts.append('encryptable=/dev/block/by-name/metadata')
+                          parts[3] = ','.join(opts)
+                          line = ' '.join(parts)
+              lines.append(line)
+          s = '\n'.join(lines) + ('\n' if s.endswith('\n') else '')
+          if s == old:
+              raise SystemExit('DFE edit made no changes')
+          p.write_text(s)
+          PY
+
+          echo '--- modified vendor/etc/fstab.mt6768 ---'
+          cat modified_vendor/etc/fstab.mt6768
+          grep -q 'encryptable=/dev/block/by-name/metadata' modified_vendor/etc/fstab.mt6768
+          ! grep -q 'inlinecrypt' modified_vendor/etc/fstab.mt6768
+          ! grep -q 'fileencryption=aes-256-xts:aes-256-cts:v2' modified_vendor/etc/fstab.mt6768
+          ! grep -q 'keydirectory=/metadata/vold/metadata_encryption' modified_vendor/etc/fstab.mt6768
+          diff -u stock_fstab.mt6768 modified_vendor/etc/fstab.mt6768 | tee fstab_dfe.patch
+
+      - name: Derive original EROFS UUID, block size and compression hints
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          s = Path('vendor_dump_summary.txt').read_text(errors='replace')
+          uuid = re.search(r'(?i)\bUUID\s*[:=]\s*([0-9a-f]{8}-[0-9a-f-]{27,})', s)
+          block = re.search(r'(?i)(?:block\s*size|blksz|blocksize)\s*[:=]\s*(\d+)', s)
+          comps = []
+          for x in ('lz4hc','lz4','lzma','zstd','deflate'):
+              if re.search(r'(?i)\b' + re.escape(x) + r'\b', s):
+                  comps.append(x)
+          out = []
+          out.append('UUID=' + (uuid.group(1) if uuid else ''))
+          out.append('BLOCK_SIZE=' + (block.group(1) if block else '4096'))
+          out.append('COMPRESSION=' + (comps[0] if comps else 'lz4hc'))
+          Path('erofs_rebuild_hints.txt').write_text('\n'.join(out) + '\n')
+          print('\n'.join(out))
+          PY
+          cat erofs_rebuild_hints.txt
+
+      - name: Build validated standalone DFE EROFS candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          source erofs_rebuild_hints.txt
+          orig_size="$(stat -c '%s' stock/vendor_a.img)"
+          uuid_arg=()
+          if [ -n "${UUID:-}" ]; then uuid_arg=(-U "$UUID"); fi
+          candidates=()
+          case "$COMPRESSION" in
+            lz4hc) candidates=(lz4hc,9 lz4hc,12 lz4) ;;
+            lz4) candidates=(lz4 lz4hc,9 lz4hc,12) ;;
+            lzma) candidates=(lzma,6 lzma,9) ;;
+            zstd) candidates=(zstd) ;;
+            deflate) candidates=(deflate) ;;
+            *) candidates=(lz4hc,9 lz4hc,12 lz4) ;;
+          esac
+          best=''
+          best_size=0
+          for comp in "${candidates[@]}"; do
+            out="candidate-${comp//,/-}.img"
+            echo "=== Trying compression $comp ==="
+            rm -f "$out"
+            if ! mkfs.erofs -b "$BLOCK_SIZE" "${uuid_arg[@]}" -z "$comp" -C "$BLOCK_SIZE" "$out" modified_vendor; then
+              echo "mkfs.erofs failed for $comp"
+              continue
+            fi
+            size="$(stat -c '%s' "$out")"
+            echo "$out: $size bytes"
+            if [ "$size" -le "$orig_size" ] && fsck.erofs "$out" > "${out}.fsck" 2>&1; then
+              best="$out"
+              best_size="$size"
+              break
+            fi
+            rm -f "$out" "${out}.fsck"
+          done
+          test -n "$best"
+          cp "$best" vendor_a_dfe_candidate.img
+          sha256sum vendor_a_dfe_candidate.img | tee vendor_a_dfe_candidate.sha256
+          printf 'candidate_size=%s\noriginal_size=%s\n' "$best_size" "$orig_size" | tee candidate_size.txt
+          dump.erofs -s vendor_a_dfe_candidate.img | tee candidate_dump_summary.txt
+          dump.erofs -S vendor_a_dfe_candidate.img | tee candidate_dump_superblock.txt
+          fsck.erofs vendor_a_dfe_candidate.img | tee candidate_fsck.txt
+
+      - name: Inspect vendor_a AVB footer
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://android.googlesource.com/platform/external/avb /tmp/avb
+          python3 /tmp/avb/avbtool.py info_image --image stock/vendor_a.img | tee vendor_a_avb.txt
+          python3 /tmp/avb/avbtool.py info_image --image vendor_a_dfe_candidate.img | tee vendor_a_dfe_candidate_avb.txt || true
+
+      - name: Package DFE candidate artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: km5n-vendor-erofs-inspection
+          name: km5n-vendor-dfe-candidate
           path: |
             vendor_a.sha256
+            vendor_size.txt
             vendor_dump_summary.txt
             vendor_dump_superblock.txt
             vendor_fsck.txt
             stock_fstab.mt6768
+            modified_vendor/etc/fstab.mt6768
+            stock_data_fstab_line.txt
+            fstab_dfe.patch
+            erofs_rebuild_hints.txt
+            candidate_size.txt
+            vendor_a_dfe_candidate.img
+            vendor_a_dfe_candidate.sha256
+            candidate_dump_summary.txt
+            candidate_dump_superblock.txt
+            candidate_fsck.txt
+            vendor_a_avb.txt
+            vendor_a_dfe_candidate_avb.txt
           if-no-files-found: error
