@@ -1,4 +1,4 @@
-name: TWRP Recovery Builder 2024 - KM5n
+name: TWRP Recovery Builder 2024
 
 on:
   workflow_dispatch:
@@ -52,12 +52,16 @@ on:
         required: true
         default: false
         type: boolean
+  push:
+    branches:
+    - main
 
 jobs:
   build:
     name: Build TWRP by ${{ github.actor }}
     runs-on: ubuntu-22.04
-    if: github.event.repository.owner.id == github.event.sender.id
+    # Push events only register/refresh the workflow. Actual builds are manual.
+    if: github.event_name == 'workflow_dispatch' && github.event.repository.owner.id == github.event.sender.id
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     permissions:
