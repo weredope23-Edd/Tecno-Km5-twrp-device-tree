@@ -112,11 +112,13 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
 
           set -x
-          # Four concurrent projects is a better compromise for the hosted
-          # runner: the previous -j1 sync took ~41 minutes.
+          # Keep repo sync single-threaded. The previous -j1 sync completed,
+          # while -j4 hit the runner's disk ceiling during the concurrent
+          # checkout/fetch phase. The extra time is preferable to losing a
+          # 40+ minute sync to ENOSPC.
           repo sync \
             -c \
-            -j4 \
+            -j1 \
             --force-sync \
             --no-clone-bundle \
             --no-tags \
