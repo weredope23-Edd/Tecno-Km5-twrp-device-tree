@@ -32,17 +32,26 @@ jobs:
           test "$(sha256sum stock/vendor_a.img | awk '{print $1}')" = "b2d47a2d341f651ec4ad175273f07d987f2c068b94d46878bba589642793ef38"
           stat -c 'vendor_a.img: %s bytes' stock/vendor_a.img
 
-      - name: Install EROFS tools
+      - name: Build current EROFS tools
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y erofs-utils
-          dump.erofs --help || true
-          fsck.erofs --help || true
-          mkfs.erofs --help || true
+          sudo apt-get install -y \
+            autoconf automake libtool pkg-config uuid-dev zlib1g-dev \
+            liblz4-dev liblzma-dev libzstd-dev libfuse-dev git build-essential
+          git clone --depth 1 --branch v1.9.1 https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git /tmp/erofs-utils
+          cd /tmp/erofs-utils
+          ./autogen.sh
+          ./configure --enable-lz4 --enable-lzma --with-libzstd
+          make -j"$(nproc)"
+          sudo install -m 0755 fsck/fsck.erofs /usr/local/bin/fsck.erofs
+          sudo install -m 0755 dump/dump.erofs /usr/local/bin/dump.erofs
+          sudo install -m 0755 mkfs/mkfs.erofs /usr/local/bin/mkfs.erofs
+          /usr/local/bin/fsck.erofs -V
+          /usr/local/bin/dump.erofs -V || true
 
-      - name: Inspect EROFS metadata
+      - name: Inspect EROFS metadata and integrity
         shell: bash
         run: |
           set -euo pipefail
@@ -50,15 +59,16 @@ jobs:
           dump.erofs -s stock/vendor_a.img | tee vendor_dump_summary.txt
           echo '--- EROFS statistics ---'
           dump.erofs -S stock/vendor_a.img | tee vendor_dump_superblock.txt
-          echo '--- EROFS integrity check ---'
-          fsck.erofs -p stock/vendor_a.img | tee vendor_fsck.txt
+          echo '--- EROFS integrity check and full extraction validation ---'
+          fsck.erofs --extract stock/vendor_a.img | tee vendor_fsck.txt
 
       - name: Extract vendor filesystem
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf extracted_vendor
           mkdir -p extracted_vendor
-          fsck.erofs --extract extracted_vendor stock/vendor_a.img
+          fsck.erofs --extract=extracted_vendor stock/vendor_a.img
           test -f extracted_vendor/etc/fstab.mt6768
           cp extracted_vendor/etc/fstab.mt6768 stock_fstab.mt6768
           echo '--- stock vendor/etc/fstab.mt6768 ---'
