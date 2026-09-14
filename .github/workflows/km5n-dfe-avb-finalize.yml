@@ -20,6 +20,12 @@ jobs:
       actions: read
       contents: read
     steps:
+      - name: Checkout repository with LFS
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 1
+
       - name: Select source run
         id: source
         env:
@@ -45,14 +51,15 @@ jobs:
         run: |
           set -euo pipefail
           test -f candidate_artifact/vendor_a_dfe_candidate.img
-          test -f candidate_artifact/vendor_a_avb.txt
           test -f candidate_artifact/vendor_a_dfe_candidate.sha256
           cp candidate_artifact/vendor_a_dfe_candidate.img vendor_a_dfe_candidate.img
-          cp candidate_artifact/vendor_a_avb.txt vendor_a_avb.txt
           cp candidate_artifact/vendor_a_dfe_candidate.sha256 vendor_a_dfe_candidate.sha256
           echo 'Artifact archive integrity was verified by actions/download-artifact.'
           echo 'Candidate files:'
-          ls -lh vendor_a_dfe_candidate.img vendor_a_avb.txt vendor_a_dfe_candidate.sha256
+          ls -lh vendor_a_dfe_candidate.img vendor_a_dfe_candidate.sha256
+          echo 'Stock vendor image:'
+          ls -lh stock/vendor_a.img
+          sha256sum stock/vendor_a.img
 
       - name: Install Android 15 AVB tooling
         run: |
@@ -63,6 +70,7 @@ jobs:
       - name: Capture stock AVB parameters
         run: |
           set -euo pipefail
+          python3 /tmp/avb/avbtool.py info_image --image stock/vendor_a.img | tee vendor_a_avb.txt
           python3 - <<'PY'
           import re
           from pathlib import Path
