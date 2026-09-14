@@ -89,7 +89,7 @@ jobs:
               'rollback_index_location':one(r'^\s*Rollback Index Location:\s+(\d+)$','Rollback Index Location'),
               'flags':one(r'^\s*Flags:\s+(\d+)$','Flags'),
               'release':one(r"^\s*Release String:\s+'(.*)'$",'Release String'),
-              'image_size':one(r'^\s*Image size:\s+(\d+) bytes$','Image size'),
+              'image_size':one(r'^\s*Original image size:\s+(\d+) bytes$','Original image size'),
           }
           props=re.findall(r"^\s*Prop: ([^ ]+) -> '(.*)'$",s,re.M)
           expected={
@@ -117,7 +117,7 @@ jobs:
           if values['hash_algorithm'] != 'sha256': raise SystemExit('unexpected hash algorithm')
           if values['algorithm'] != 'NONE': raise SystemExit('unexpected AVB signing algorithm')
           if values['fec_roots'] != '2': raise SystemExit('unexpected FEC roots')
-          if values['image_size'] != '512012288': raise SystemExit('unexpected stock AVB image size')
+          if values['image_size'] != '512012288': raise SystemExit('unexpected stock AVB original image size')
 
       - name: Calculate AVB capacity and prepare data area
         run: |
