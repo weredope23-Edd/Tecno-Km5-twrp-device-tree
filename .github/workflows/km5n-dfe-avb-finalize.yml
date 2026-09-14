@@ -61,13 +61,13 @@ jobs:
           cp candidate_artifact/vendor_a_dfe_candidate.img .
           cp candidate_artifact/vendor_a_avb.txt .
           cp candidate_artifact/vendor_a_dfe_candidate.sha256 .
-          sha256sum vendor_a_dfe_candidate.img
+          sha256sum -c vendor_a_dfe_candidate.sha256 || sha256sum vendor_a_dfe_candidate.img
 
-      - name: Install AVB tooling
+      - name: Install Android 15 AVB tooling
         run: |
           set -euo pipefail
-          git clone --depth 1 https://android.googlesource.com/platform/external/avb /tmp/avb
-          python3 /tmp/avb/avbtool.py version || true
+          git clone --depth 1 --branch android-15.0.0_r35 https://android.googlesource.com/platform/external/avb /tmp/avb
+          python3 /tmp/avb/avbtool.py version | tee avbtool_version.txt
 
       - name: Capture stock AVB parameters
         run: |
@@ -93,6 +93,14 @@ jobs:
               'image_size':one(r'^\s*Image size:\s+(\d+) bytes$','Image size'),
           }
           props=re.findall(r"^\s*Prop: ([^ ]+) -> '(.*)'$",s,re.M)
+          expected={
+              'com.android.build.vendor.os_version':'15',
+              'com.android.build.vendor.security_patch':'2026-05-01',
+              'com.android.build.vendor.fingerprint':'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A.240905.015.A2/260422V952:user/release-keys',
+          }
+          got=dict(props)
+          for k,v in expected.items():
+              if got.get(k) != v: raise SystemExit(f'unexpected stock AVB property {k}: {got.get(k)!r}')
           Path('avb_params.env').write_text('\n'.join([
               f"AVB_SALT={values['salt']}",
               f"AVB_HASH_ALGORITHM={values['hash_algorithm']}",
@@ -112,23 +120,35 @@ jobs:
           if values['fec_roots'] != '2': raise SystemExit('unexpected FEC roots')
           if values['image_size'] != '512012288': raise SystemExit('unexpected stock AVB image size')
 
-      - name: Build AVB-finalized DFE image
+      - name: Calculate AVB capacity and prepare data area
         run: |
           set -euo pipefail
           source avb_params.env
           partition_size=521871360
-          cp vendor_a_dfe_candidate.img vendor_a_dfe.img
-          candidate_size="$(stat -c '%s' vendor_a_dfe.img)"
+          max_image_size="$(python3 /tmp/avb/avbtool.py add_hashtree_footer --partition_size "$partition_size" --hash_algorithm "$AVB_HASH_ALGORITHM" --block_size 4096 --fec_num_roots "$AVB_FEC_ROOTS" --calc_max_image_size)"
+          echo "AVB calculated maximum image size: $max_image_size"
+          candidate_size="$(stat -c '%s' vendor_a_dfe_candidate.img)"
           echo "Raw candidate size: $candidate_size"
-          echo "Stock AVB data-area size: $AVB_STOCK_IMAGE_SIZE"
+          echo "Required stock data-area size: $AVB_STOCK_IMAGE_SIZE"
           if [ "$candidate_size" -gt "$AVB_STOCK_IMAGE_SIZE" ]; then
             echo 'Candidate is larger than the stock AVB data area.'
             exit 1
           fi
+          if [ "$AVB_STOCK_IMAGE_SIZE" -gt "$max_image_size" ]; then
+            echo 'Stock data-area size does not fit this AVB partition geometry.'
+            exit 1
+          fi
+          cp vendor_a_dfe_candidate.img vendor_a_dfe.img
           if [ "$candidate_size" -lt "$AVB_STOCK_IMAGE_SIZE" ]; then
             truncate -s "$AVB_STOCK_IMAGE_SIZE" vendor_a_dfe.img
-            echo "Padded candidate with trailing zero blocks to $AVB_STOCK_IMAGE_SIZE bytes"
           fi
+          stat -c 'Prepared image size: %s bytes' vendor_a_dfe.img
+
+      - name: Add AVB hashtree, FEC and footer
+        run: |
+          set -euo pipefail
+          source avb_params.env
+          partition_size=521871360
           props=()
           while IFS= read -r line; do
             [[ "$line" == AVB_PROP_* ]] || continue
@@ -151,8 +171,18 @@ jobs:
                 --internal_release_string "$AVB_RELEASE")
           args+=("${props[@]}")
           printf 'Running: avbtool.py'; printf ' %q' "${args[@]}"; printf '\n'
-          python3 /tmp/avb/avbtool.py "${args[@]}" | tee avbtool_add_hashtree_footer.log
-          test "$(stat -c '%s' vendor_a_dfe.img)" = "$partition_size"
+          set +e
+          python3 /tmp/avb/avbtool.py "${args[@]}" >avbtool_add_hashtree_footer.log 2>&1
+          rc=$?
+          set -e
+          cat avbtool_add_hashtree_footer.log
+          if [ "$rc" -ne 0 ]; then
+            echo "avbtool add_hashtree_footer failed with exit code $rc"
+            exit "$rc"
+          fi
+          actual="$(stat -c '%s' vendor_a_dfe.img)"
+          echo "Final image size after AVB: $actual"
+          test "$actual" = "$partition_size"
           sha256sum vendor_a_dfe.img | tee vendor_a_dfe.sha256
 
       - name: Validate final AVB image
@@ -163,25 +193,24 @@ jobs:
           import re
           from pathlib import Path
           s=Path('vendor_a_dfe_avb.txt').read_text()
-          checks=[
-              (r'^\s*Footer version:\s+1\.0$', 'footer version'),
-              (r'^\s*Original image size:\s+512012288 bytes$', 'original image size'),
-              (r'^\s*Algorithm:\s+NONE$', 'algorithm'),
-              (r'^\s*FEC num roots:\s+2$', 'FEC roots'),
-              (r'^\s*Hash Algorithm:\s+sha256$', 'hash algorithm'),
-              (r'^\s*Partition Name:\s+vendor$', 'partition name'),
-              (r"^\s*Prop: com\.android\.build\.vendor\.os_version -> '15'$", 'OS version'),
-              (r"^\s*Prop: com\.android\.build\.vendor\.security_patch -> '2026-05-01'$", 'security patch'),
-              (r"^\s*Prop: com\.android\.build\.vendor\.fingerprint -> 'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A\.240905\.015\.A2/260422V952:user/release-keys'$", 'fingerprint'),
-          ]
-          for pat,name in checks:
-              if not re.search(pat,s,re.M): raise SystemExit('AVB validation failed: '+name)
+          def need(p,name):
+              if not re.search(p,s,re.M): raise SystemExit('AVB validation failed: '+name)
+          need(r'^\s*Footer version:\s+1\.0$', 'footer version')
+          need(r'^\s*Original image size:\s+512012288 bytes$', 'original image size')
+          need(r'^\s*Algorithm:\s+NONE$', 'algorithm')
+          need(r'^\s*FEC num roots:\s+2$', 'FEC roots')
+          need(r'^\s*Hash Algorithm:\s+sha256$', 'hash algorithm')
+          need(r'^\s*Partition Name:\s+vendor$', 'partition name')
+          need(r"^\s*Prop: com\.android\.build\.vendor\.os_version -> '15'$", 'OS version')
+          need(r"^\s*Prop: com\.android\.build\.vendor\.security_patch -> '2026-05-01'$", 'security patch')
+          need(r"^\s*Prop: com\.android\.build\.vendor\.fingerprint -> 'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A\.240905\.015\.A2/260422V952:user/release-keys'$", 'fingerprint')
           m=re.search(r'^\s*Image Size:\s+(\d+) bytes$',s,re.M)
           if not m or int(m.group(1)) != 512012288: raise SystemExit('hashtree descriptor image size mismatch')
           tree=re.search(r'^\s*Tree Size:\s+(\d+) bytes$',s,re.M)
           fec=re.search(r'^\s*FEC size:\s+(\d+) bytes$',s,re.M)
           if not tree or not fec: raise SystemExit('missing hashtree/FEC sizing')
-          Path('vendor_a_dfe_avb_validation.txt').write_text('AVB finalization and hashtree/FEC descriptor validation passed\n')
+          print(f'Hashtree size: {tree.group(1)} bytes')
+          print(f'FEC size: {fec.group(1)} bytes')
           PY
 
       - name: Upload AVB-valid DFE image
@@ -192,7 +221,7 @@ jobs:
             vendor_a_dfe.img
             vendor_a_dfe.sha256
             vendor_a_dfe_avb.txt
-            vendor_a_dfe_avb_validation.txt
             avb_params.env
+            avbtool_version.txt
             avbtool_add_hashtree_footer.log
             source_artifact.txt
