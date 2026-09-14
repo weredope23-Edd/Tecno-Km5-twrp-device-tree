@@ -50,7 +50,12 @@ jobs:
           cp candidate_artifact/vendor_a_dfe_candidate.img .
           cp candidate_artifact/vendor_a_avb.txt .
           cp candidate_artifact/vendor_a_dfe_candidate.sha256 .
-          sha256sum -c vendor_a_dfe_candidate.sha256
+          expected="$(awk 'NF {print $1; exit}' vendor_a_dfe_candidate.sha256)"
+          actual="$(sha256sum vendor_a_dfe_candidate.img | awk '{print $1}')"
+          test -n "$expected"
+          echo "Expected candidate SHA256: $expected"
+          echo "Actual candidate SHA256:   $actual"
+          test "$expected" = "$actual"
           stat -c 'Candidate size: %s bytes' vendor_a_dfe_candidate.img
 
       - name: Install Android 15 AVB tooling
