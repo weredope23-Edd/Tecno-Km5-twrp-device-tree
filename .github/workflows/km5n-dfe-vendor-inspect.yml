@@ -47,7 +47,7 @@ jobs:
           set -euo pipefail
           git clone --depth 1 --branch v5.4.6 https://github.com/tukaani-project/xz.git /tmp/xz
           cd /tmp/xz
-          ./autogen.sh
+          ./autogen.sh --no-po4a
           ./configure --prefix=/usr/local
           make -j"$(nproc)"
           sudo make install
