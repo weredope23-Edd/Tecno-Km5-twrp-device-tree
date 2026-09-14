@@ -1,0 +1,186 @@
+name: KM5n DFE AVB Finalizer
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'Successful KM5n Vendor DFE Inspector run ID'
+        required: true
+        type: string
+  workflow_run:
+    workflows: ['KM5n Vendor DFE Inspector']
+    types: [completed]
+
+jobs:
+  finalize:
+    name: Finalize and validate AVB-correct vendor DFE image
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Select source run
+        id: source
+        env:
+          MANUAL_RUN_ID: ${{ inputs.source_run_id }}
+          EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          run_id="${MANUAL_RUN_ID:-$EVENT_RUN_ID}"
+          test -n "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Using source run $run_id"
+
+      - name: Download candidate artifact from source run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.source.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          api="https://api.github.com/repos/$repo/actions/runs/$RUN_ID/artifacts"
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$api" -o artifacts.json
+          artifact_id="$(python3 - <<'PY'
+          import json
+          d=json.load(open('artifacts.json'))
+          for a in d.get('artifacts',[]):
+              if a.get('name') == 'km5n-vendor-dfe-candidate' and not a.get('expired'):
+                  print(a['id']); break
+          else: raise SystemExit('km5n-vendor-dfe-candidate artifact not found')
+          PY
+          )"
+          echo "artifact_id=$artifact_id" | tee source_artifact.txt
+          curl -fsSL -L -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/$repo/actions/artifacts/$artifact_id/zip" -o candidate_artifact.zip
+          rm -rf candidate_artifact
+          mkdir candidate_artifact
+          unzip -q candidate_artifact.zip -d candidate_artifact
+          test -f candidate_artifact/vendor_a_dfe_candidate.img
+          test -f candidate_artifact/vendor_a_avb.txt
+          cp candidate_artifact/vendor_a_dfe_candidate.img .
+          cp candidate_artifact/vendor_a_avb.txt .
+          cp candidate_artifact/vendor_a_dfe_candidate.sha256 .
+          sha256sum vendor_a_dfe_candidate.img
+
+      - name: Install AVB tooling
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://android.googlesource.com/platform/external/avb /tmp/avb
+          python3 /tmp/avb/avbtool.py version || true
+
+      - name: Capture stock AVB parameters
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          s=Path('vendor_a_avb.txt').read_text()
+          def one(p,name):
+              m=re.search(p,s,re.M)
+              if not m: raise SystemExit(f'missing AVB field: {name}')
+              return m.group(1)
+          values={
+              'salt':one(r'^\s*Salt:\s+([0-9a-fA-F]+)$','Salt'),
+              'hash_algorithm':one(r'^\s*Hash Algorithm:\s+(\S+)$','Hash Algorithm'),
+              'partition_name':one(r'^\s*Partition Name:\s+(\S+)$','Partition Name'),
+              'fec_roots':one(r'^\s*FEC num roots:\s+(\d+)$','FEC num roots'),
+              'algorithm':one(r'^\s*Algorithm:\s+(\S+)$','Algorithm'),
+              'rollback_index':one(r'^\s*Rollback Index:\s+(\d+)$','Rollback Index'),
+              'rollback_index_location':one(r'^\s*Rollback Index Location:\s+(\d+)$','Rollback Index Location'),
+              'flags':one(r'^\s*Flags:\s+(\d+)$','Flags'),
+              'release':one(r"^\s*Release String:\s+'(.*)'$",'Release String'),
+          }
+          props=re.findall(r"^\s*Prop: ([^ ]+) -> '(.*)'$",s,re.M)
+          Path('avb_params.env').write_text('\n'.join([
+              f"AVB_SALT={values['salt']}",
+              f"AVB_HASH_ALGORITHM={values['hash_algorithm']}",
+              f"AVB_PARTITION_NAME={values['partition_name']}",
+              f"AVB_FEC_ROOTS={values['fec_roots']}",
+              f"AVB_ALGORITHM={values['algorithm']}",
+              f"AVB_ROLLBACK_INDEX={values['rollback_index']}",
+              f"AVB_ROLLBACK_INDEX_LOCATION={values['rollback_index_location']}",
+              f"AVB_FLAGS={values['flags']}",
+              'AVB_RELEASE='+repr(values['release']),
+          ]+[f'AVB_PROP_{i}='+repr(k+':'+v) for i,(k,v) in enumerate(props)])+'\n')
+          print(Path('avb_params.env').read_text(),end='')
+          if values['partition_name'] != 'vendor': raise SystemExit('unexpected partition name')
+          if values['hash_algorithm'] != 'sha256': raise SystemExit('unexpected hash algorithm')
+          if values['algorithm'] != 'NONE': raise SystemExit('unexpected AVB signing algorithm')
+          if values['fec_roots'] != '2': raise SystemExit('unexpected FEC roots')
+          if not re.search(r'^\s*Image size:\s+512012288 bytes$',s,re.M): raise SystemExit('unexpected stock AVB image size')
+
+      - name: Build AVB-finalized DFE image
+        run: |
+          set -euo pipefail
+          source avb_params.env
+          partition_size=521871360
+          cp vendor_a_dfe_candidate.img vendor_a_dfe.img
+          props=()
+          while IFS= read -r line; do
+            [[ "$line" == AVB_PROP_* ]] || continue
+            val="${line#*=}"
+            val="${val#\'}"; val="${val%\'}"
+            props+=(--prop "$val")
+          done < avb_params.env
+          args=(add_hash_footer
+                --image vendor_a_dfe.img
+                --partition_size "$partition_size"
+                --partition_name "$AVB_PARTITION_NAME"
+                --hash_algorithm "$AVB_HASH_ALGORITHM"
+                --salt "$AVB_SALT"
+                --algorithm "$AVB_ALGORITHM"
+                --rollback_index "$AVB_ROLLBACK_INDEX"
+                --rollback_index_location "$AVB_ROLLBACK_INDEX_LOCATION"
+                --flags "$AVB_FLAGS"
+                --fec_num_roots "$AVB_FEC_ROOTS"
+                --internal_release_string "$AVB_RELEASE")
+          args+=("${props[@]}")
+          python3 /tmp/avb/avbtool.py "${args[@]}" | tee avbtool_add_hash_footer.log
+          test "$(stat -c '%s' vendor_a_dfe.img)" = "$partition_size"
+          sha256sum vendor_a_dfe.img | tee vendor_a_dfe.sha256
+
+      - name: Validate final AVB image
+        run: |
+          set -euo pipefail
+          python3 /tmp/avb/avbtool.py info_image --image vendor_a_dfe.img | tee vendor_a_dfe_avb.txt
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          s=Path('vendor_a_dfe_avb.txt').read_text()
+          checks=[
+              (r'^\s*Footer version:\s+1\.0$', 'footer version'),
+              (r'^\s*Image size:\s+512012288 bytes$', 'image size'),
+              (r'^\s*Algorithm:\s+NONE$', 'algorithm'),
+              (r'^\s*FEC num roots:\s+2$', 'FEC roots'),
+              (r'^\s*Hash Algorithm:\s+sha256$', 'hash algorithm'),
+              (r'^\s*Partition Name:\s+vendor$', 'partition name'),
+              (r"^\s*Prop: com\.android\.build\.vendor\.os_version -> '15'$", 'OS version'),
+              (r"^\s*Prop: com\.android\.build\.vendor\.security_patch -> '2026-05-01'$", 'security patch'),
+              (r"^\s*Prop: com\.android\.build\.vendor\.fingerprint -> 'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A\.240905\.015\.A2/260422V952:user/release-keys'$", 'fingerprint'),
+          ]
+          for pat,name in checks:
+              if not re.search(pat,s,re.M): raise SystemExit('AVB validation failed: '+name)
+          m=re.search(r'^\s*Image Size:\s+(\d+) bytes$',s,re.M)
+          if not m or int(m.group(1)) != 512012288: raise SystemExit('hashtree descriptor image size mismatch')
+          tree=re.search(r'^\s*Tree Size:\s+(\d+) bytes$',s,re.M)
+          fec=re.search(r'^\s*FEC size:\s+(\d+) bytes$',s,re.M)
+          if not tree or not fec: raise SystemExit('missing hashtree/FEC sizing')
+          Path('vendor_a_dfe_avb_validation.txt').write_text('AVB finalization and descriptor validation passed\n')
+          PY
+
+      - name: Upload AVB-valid DFE image
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-vendor-dfe-avb-valid
+          path: |
+            vendor_a_dfe.img
+            vendor_a_dfe.sha256
+            vendor_a_dfe_avb.txt
+            vendor_a_dfe_avb_validation.txt
+            avb_params.env
+            avbtool_add_hash_footer.log
+            source_artifact.txt
