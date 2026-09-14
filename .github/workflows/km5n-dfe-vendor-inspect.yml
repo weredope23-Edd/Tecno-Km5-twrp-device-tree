@@ -21,6 +21,7 @@ jobs:
         with:
           lfs: true
           fetch-depth: 1
+
       - name: Verify stock vendor image
         run: |
           set -euo pipefail
@@ -28,11 +29,13 @@ jobs:
           sha256sum stock/vendor_a.img | tee vendor_a.sha256
           test "$(sha256sum stock/vendor_a.img | awk '{print $1}')" = "b2d47a2d341f651ec4ad175273f07d987f2c068b94d46878bba589642793ef38"
           stat -c 'vendor_a.img: %s bytes' stock/vendor_a.img | tee vendor_size.txt
+
       - name: Install EROFS build dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y autoconf automake autopoint libtool pkg-config uuid-dev zlib1g-dev liblz4-dev liblzma-dev libzstd-dev libfuse-dev git build-essential python3 python3-pip
+
       - name: Build modern liblzma
         run: |
           set -euo pipefail
@@ -44,6 +47,7 @@ jobs:
           sudo make install
           sudo ldconfig
           pkg-config --modversion liblzma
+
       - name: Build EROFS v1.9.3
         run: |
           set -euo pipefail
@@ -61,12 +65,14 @@ jobs:
           fsck.erofs -V
           dump.erofs -V
           mkfs.erofs --help | tee mkfs_erofs_help.txt
+
       - name: Inspect stock EROFS
         run: |
           set -euo pipefail
           dump.erofs -s stock/vendor_a.img | tee vendor_dump_summary.txt
           dump.erofs -S stock/vendor_a.img | tee vendor_dump_superblock.txt
           fsck.erofs stock/vendor_a.img | tee vendor_fsck.txt
+
       - name: Extract vendor filesystem
         run: |
           set -euo pipefail
@@ -77,6 +83,7 @@ jobs:
           cp -a extracted_vendor/. modified_vendor/
           cp extracted_vendor/etc/fstab.mt6768 stock_fstab.mt6768
           cat stock_fstab.mt6768
+
       - name: Apply DFE fstab change
         run: |
           set -euo pipefail
@@ -111,6 +118,7 @@ jobs:
           ! grep -q 'fileencryption=aes-256-xts:aes-256-cts:v2' modified_vendor/etc/fstab.mt6768
           ! grep -q 'keydirectory=/metadata/vold/metadata_encryption' modified_vendor/etc/fstab.mt6768
           diff -u stock_fstab.mt6768 modified_vendor/etc/fstab.mt6768 | tee fstab_dfe.patch || true
+
       - name: Derive safe EROFS rebuild hints
         run: |
           set -euo pipefail
@@ -124,28 +132,31 @@ jobs:
                   if m:return m.group(1).strip()
               return default
           uuid=field(['Filesystem UUID','UUID'])
-          block_raw=field(['Block size','Filesystem block size'],'4096')
+          block_raw=field(['Filesystem blocksize','Block size','Filesystem block size'],'4096')
           m=re.search(r'\d+',block_raw); block=m.group(0) if m else '4096'
           if block not in ('4096','8192','16384','32768','65536'): block='4096'
-          alg=field(['Filesystem compr_algs','Filesystem compression algorithms','Compression algorithms'])
-          low=alg.lower()
-          if 'lz4hc' in low: alg='lz4hc'
-          elif re.search(r'\blz4\b',low): alg='lz4'
-          elif 'lzma' in low: alg='lzma'
-          elif 'zstd' in low: alg='zstd'
-          elif 'deflate' in low: alg='deflate'
-          else:
-              alg=''
-              for a in ('lz4hc','lz4','lzma','zstd','deflate'):
-                  if re.search(r'\b'+a+r'\b',s,re.I): alg=a; break
           norm=s.lower().replace('-','_')
           feats=[]
+          if re.search(r'\bxattr_filter\b',norm): feats.append('xattr-name-filter')
           for f in ('ztailpacking','fragments','dedupe'):
               if re.search(r'\b'+f+r'\b',norm): feats.append(f)
           big=bool(re.search(r'\bbig[_ -]?pcluster\b',norm))
-          Path('erofs_rebuild_hints.txt').write_text('\n'.join([f'UUID={uuid}',f'BLOCK_SIZE={block}',f'COMPR_ALG={alg}',f'BIG_PCLUSTER={int(big)}',f'FEATURES={" ".join(feats)}'])+'\n')
+          # dump.erofs v1.9.3 does not expose the primary compressor in -s output.
+          # Keep the compressor as an explicit search matrix rather than pretending
+          # an unreported value is known. Android EROFS vendor images commonly use
+          # LZ4-family compression, so try lz4hc first, then lz4 and other fallbacks.
+          alg=''
+          if re.search(r'\blz4\b',norm): alg='lz4'
+          Path('erofs_rebuild_hints.txt').write_text('\n'.join([
+              f'UUID={uuid}',
+              f'BLOCK_SIZE={block}',
+              f'COMPR_ALG={alg}',
+              f'BIG_PCLUSTER={int(big)}',
+              'FEATURES='+repr(' '.join(feats))
+          ])+'\n')
           print(Path('erofs_rebuild_hints.txt').read_text(),end='')
           PY
+
       - name: Build validated DFE EROFS candidate
         id: build_candidate
         continue-on-error: true
@@ -156,12 +167,9 @@ jobs:
           : > rebuild_attempts.txt
           best=''; best_size=0
           feature_sets=()
-          stock_features=''
-          [[ " ${FEATURES:-} " =~ [[:space:]]ztailpacking[[:space:]] ]] && stock_features+='ztailpacking,'
-          [[ " ${FEATURES:-} " =~ [[:space:]]fragments[[:space:]] ]] && stock_features+='fragments,'
-          [[ " ${FEATURES:-} " =~ [[:space:]]dedupe[[:space:]] ]] && stock_features+='dedupe,'
-          stock_features="${stock_features%,}"
-          [[ -n "$stock_features" ]] && feature_sets+=("$stock_features")
+          stock_features="${FEATURES:-}"
+          stock_features="${stock_features#\'}"; stock_features="${stock_features%\'}"
+          if [[ -n "$stock_features" ]]; then feature_sets+=("$stock_features"); fi
           feature_sets+=("")
           clusters=(4096)
           if [[ "${BIG_PCLUSTER:-0}" == 1 ]]; then clusters=(65536 131072 262144 524288 1048576 4096); fi
@@ -214,6 +222,107 @@ jobs:
           dump.erofs -s vendor_a_dfe_candidate.img | tee candidate_dump_summary.txt
           dump.erofs -S vendor_a_dfe_candidate.img | tee candidate_dump_superblock.txt
           fsck.erofs vendor_a_dfe_candidate.img | tee candidate_fsck.txt
+
+      - name: Inspect stock AVB footer and capture parameters
+        if: steps.build_candidate.outcome == 'success'
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://android.googlesource.com/platform/external/avb /tmp/avb
+          python3 /tmp/avb/avbtool.py info_image --image stock/vendor_a.img | tee vendor_a_avb.txt
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          s=Path('vendor_a_avb.txt').read_text()
+          def one(p, name):
+              m=re.search(p,s,re.M)
+              if not m: raise SystemExit(f'missing AVB field: {name}')
+              return m.group(1)
+          image_size=int(one(r'^\s*Image size:\s+(\d+) bytes$', 'Image size'))
+          partition_size=int(Path('vendor_size.txt').read_text().split()[-2]) if False else 0
+          salt=one(r'^\s*Salt:\s+([0-9a-fA-F]+)$', 'Salt')
+          hash_alg=one(r'^\s*Hash Algorithm:\s+(\S+)$', 'Hash Algorithm')
+          partition_name=one(r'^\s*Partition Name:\s+(\S+)$', 'Partition Name')
+          fec_roots=int(one(r'^\s*FEC num roots:\s+(\d+)$', 'FEC num roots'))
+          algo=one(r'^\s*Algorithm:\s+(\S+)$', 'Algorithm')
+          rollback=int(one(r'^\s*Rollback Index:\s+(\d+)$', 'Rollback Index'))
+          rollback_loc=int(one(r'^\s*Rollback Index Location:\s+(\d+)$', 'Rollback Index Location'))
+          flags=int(one(r'^\s*Flags:\s+(\d+)$', 'Flags'))
+          release=one(r"^\s*Release String:\s+'(.*)'$", 'Release String')
+          props=re.findall(r"^\s*Prop: ([^ ]+) -> '(.*)'$",s,re.M)
+          Path('avb_rebuild_hints.sh').write_text('\n'.join([
+              f'AVB_IMAGE_SIZE={image_size}',
+              f'AVB_SALT={salt}',
+              f'AVB_HASH_ALGORITHM={hash_alg}',
+              f'AVB_PARTITION_NAME={partition_name}',
+              f'AVB_FEC_ROOTS={fec_roots}',
+              f'AVB_ALGORITHM={algo}',
+              f'AVB_ROLLBACK_INDEX={rollback}',
+              f'AVB_ROLLBACK_INDEX_LOCATION={rollback_loc}',
+              f'AVB_FLAGS={flags}',
+              'AVB_RELEASE_STRING='+repr(release)
+          ]+['AVB_PROP_'+str(i)+'='+repr(k+'='+v) for i,(k,v) in enumerate(props)])+'\n')
+          print(Path('avb_rebuild_hints.sh').read_text(),end='')
+          PY
+
+      - name: Rebuild AVB hashtree and footer
+        id: build_avb
+        if: steps.build_candidate.outcome == 'success'
+        continue-on-error: true
+        run: |
+          set -u
+          source avb_rebuild_hints.sh
+          partition_size=$(stat -c '%s' stock/vendor_a.img)
+          cp vendor_a_dfe_candidate.img vendor_a_dfe.img
+          props=()
+          while IFS= read -r line; do
+            [[ "$line" == AVB_PROP_* ]] || continue
+            val="${line#*=}"
+            val="${val#\'}"; val="${val%\'}"
+            props+=(--prop "$val")
+          done < avb_rebuild_hints.sh
+          args=(add_hash_footer
+                --image vendor_a_dfe.img
+                --partition_size "$partition_size"
+                --partition_name "$AVB_PARTITION_NAME"
+                --hash_algorithm "$AVB_HASH_ALGORITHM"
+                --salt "$AVB_SALT"
+                --algorithm "$AVB_ALGORITHM"
+                --rollback_index "$AVB_ROLLBACK_INDEX"
+                --rollback_index_location "$AVB_ROLLBACK_INDEX_LOCATION"
+                --flags "$AVB_FLAGS"
+                --fec_num_roots "$AVB_FEC_ROOTS"
+                --internal_release_string "$AVB_RELEASE_STRING")
+          args+=("${props[@]}")
+          if ! python3 /tmp/avb/avbtool.py "${args[@]}" >> avb_rebuild.log 2>&1; then
+            cat avb_rebuild.log
+            exit 1
+          fi
+          cat avb_rebuild.log
+          test "$(stat -c '%s' vendor_a_dfe.img)" = "$partition_size"
+          python3 /tmp/avb/avbtool.py info_image --image vendor_a_dfe.img | tee vendor_a_dfe_avb.txt
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+          s=Path('vendor_a_dfe_avb.txt').read_text()
+          for label,expected in [
+              ('Footer version','1.0'),
+              ('Algorithm','NONE'),
+              ('Hash Algorithm','sha256'),
+              ('Partition Name','vendor'),
+              ('FEC num roots','2'),
+              ('Image size','512012288'),
+              ('Prop: com.android.build.vendor.os_version','15'),
+              ('Prop: com.android.build.vendor.security_patch','2026-05-01')]:
+              if label.startswith('Prop:'):
+                  if not re.search(re.escape(label)+r" -> '.*'",s): raise SystemExit('missing '+label)
+              else:
+                  if not re.search(r'^\s*'+re.escape(label)+r':\s+'+re.escape(expected)+r'(?: bytes)?$',s,re.M): raise SystemExit(f'{label} mismatch')
+          m=re.search(r'^\s*Image Size:\s+(\d+) bytes$',s,re.M)
+          if not m or int(m.group(1)) != 512012288: raise SystemExit('hashtree descriptor image size mismatch')
+          Path('vendor_a_dfe_avb_validation.txt').write_text('AVB validation passed\n')
+          PY
+          sha256sum vendor_a_dfe.img | tee vendor_a_dfe.sha256
+
       - name: Package diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -239,32 +348,31 @@ jobs:
             candidate_dump_summary.txt
             candidate_dump_superblock.txt
             candidate_fsck.txt
-      - name: Inspect AVB footer
-        if: steps.build_candidate.outcome == 'success'
-        run: |
-          set -euo pipefail
-          git clone --depth 1 https://android.googlesource.com/platform/external/avb /tmp/avb
-          python3 /tmp/avb/avbtool.py info_image --image stock/vendor_a.img | tee vendor_a_avb.txt
-          python3 /tmp/avb/avbtool.py info_image --image vendor_a_dfe_candidate.img | tee vendor_a_dfe_candidate_avb.txt || true
-      - name: Upload successful candidate
-        if: steps.build_candidate.outcome == 'success'
+            vendor_a_avb.txt
+            avb_rebuild_hints.sh
+            avb_rebuild.log
+            vendor_a_dfe.img
+            vendor_a_dfe.sha256
+            vendor_a_dfe_avb.txt
+            vendor_a_dfe_avb_validation.txt
+
+      - name: Upload AVB-valid DFE image
+        if: steps.build_avb.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: km5n-vendor-dfe-candidate
+          name: km5n-vendor-dfe-avb-valid
           path: |
-            vendor_a_dfe_candidate.img
-            vendor_a_dfe_candidate.sha256
-            candidate_size.txt
-            candidate_dump_summary.txt
-            candidate_dump_superblock.txt
-            candidate_fsck.txt
-            vendor_a_avb.txt
-            vendor_a_dfe_candidate_avb.txt
+            vendor_a_dfe.img
+            vendor_a_dfe.sha256
+            vendor_a_dfe_avb.txt
+            vendor_a_dfe_avb_validation.txt
             stock_fstab.mt6768
+            modified_vendor/etc/fstab.mt6768
             fstab_dfe.patch
-            erofs_rebuild_hints.txt
-      - name: Fail if no validated candidate exists
-        if: steps.build_candidate.outcome != 'success'
+            candidate_size.txt
+
+      - name: Fail if no AVB-valid DFE image exists
+        if: steps.build_avb.outcome != 'success'
         run: |
-          echo 'DFE fstab edit succeeded, but no validated vendor_a EROFS candidate was produced.'
+          echo 'EROFS candidate succeeded, but AVB finalization/validation failed.'
           exit 1
