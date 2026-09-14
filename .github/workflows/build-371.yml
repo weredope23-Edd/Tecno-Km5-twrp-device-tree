@@ -12,6 +12,7 @@ jobs:
     steps:
       - name: Cleanup runner
         uses: rokibhasansagar/slimhub_actions@main
+        continue-on-error: true
 
       - name: Checkout device tree
         uses: actions/checkout@v4
@@ -38,6 +39,7 @@ jobs:
 
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
+        continue-on-error: true
         with:
           root-reserve-mb: 512
           temp-reserve-mb: 128
@@ -47,6 +49,18 @@ jobs:
           remove-haskell: 'true'
           remove-codeql: 'true'
           remove-docker-images: 'true'
+
+      - name: Manual disk cleanup fallback
+        run: |
+          set -eux
+          # Some runner images no longer ship Docker. Do not let an optional
+          # cleanup command abort the build; reclaim space using filesystem
+          # cleanup that is available on the runner.
+          sudo rm -rf /usr/local/lib/android /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/* 2>/dev/null || true
+          sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
+          df -h /
+          df -h "$GITHUB_WORKSPACE"
 
       - name: Show runner disk space
         run: |
