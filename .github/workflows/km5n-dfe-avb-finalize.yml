@@ -47,13 +47,12 @@ jobs:
           test -f candidate_artifact/vendor_a_dfe_candidate.img
           test -f candidate_artifact/vendor_a_avb.txt
           test -f candidate_artifact/vendor_a_dfe_candidate.sha256
-          cp candidate_artifact/vendor_a_dfe_candidate.img .
-          cp candidate_artifact/vendor_a_avb.txt .
-          cp candidate_artifact/vendor_a_dfe_candidate.sha256 .
+          cp candidate_artifact/vendor_a_dfe_candidate.img vendor_a_dfe_candidate.img
+          cp candidate_artifact/vendor_a_avb.txt vendor_a_avb.txt
+          cp candidate_artifact/vendor_a_dfe_candidate.sha256 vendor_a_dfe_candidate.sha256
           echo 'Artifact archive integrity was verified by actions/download-artifact.'
-          echo 'Candidate checksum manifest:'
-          cat vendor_a_dfe_candidate.sha256
-          stat -c 'Candidate size: %s bytes' vendor_a_dfe_candidate.img
+          echo 'Candidate files:'
+          ls -lh vendor_a_dfe_candidate.img vendor_a_avb.txt vendor_a_dfe_candidate.sha256
 
       - name: Install Android 15 AVB tooling
         run: |
@@ -163,15 +162,7 @@ jobs:
                 --internal_release_string "$AVB_RELEASE")
           args+=("${props[@]}")
           printf 'Running: avbtool.py'; printf ' %q' "${args[@]}"; printf '\n'
-          set +e
-          python3 /tmp/avb/avbtool.py "${args[@]}" >avbtool_add_hashtree_footer.log 2>&1
-          rc=$?
-          set -e
-          cat avbtool_add_hashtree_footer.log
-          if [ "$rc" -ne 0 ]; then
-            echo "avbtool add_hashtree_footer failed with exit code $rc"
-            exit "$rc"
-          fi
+          python3 /tmp/avb/avbtool.py "${args[@]}" 2>&1 | tee avbtool_add_hashtree_footer.log
           actual="$(stat -c '%s' vendor_a_dfe.img)"
           echo "Final image size after AVB: $actual"
           test "$actual" = "$partition_size"
