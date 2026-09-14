@@ -1,6 +1,8 @@
 name: Build TWRP KM5n (3.7.1 / Android 14)
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 jobs:
@@ -122,9 +124,8 @@ jobs:
           mkdir -p "$TWRP_DIR/device/tecno/km5n"
 
           # Copy only the device tree. The previous implementation rsynced
-          # the entire workspace into itself, which recursively copied the
-          # freshly synced twrp371/.repo into the device tree and exhausted
-          # the build volume.
+          # the entire workspace into itself, recursively copying twrp371/.repo
+          # into the device tree and exhausting the build volume.
           rsync -a \
             --exclude='.git' \
             "$GITHUB_WORKSPACE/device/tecno/km5n/" \
