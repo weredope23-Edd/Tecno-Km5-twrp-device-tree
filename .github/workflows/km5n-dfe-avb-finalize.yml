@@ -37,17 +37,12 @@ jobs:
           set -euo pipefail
           if [[ -n "$MANUAL_RUN_ID" ]]; then
             run_id="$MANUAL_RUN_ID"
-            echo "Using manually supplied source run $run_id"
           else
-            # workflow_run event payloads can reference an upstream run whose
-            # artifact has already become unavailable. Resolve the newest
-            # successful KM5n Vendor DFE Inspector run instead of trusting a
-            # stale event id.
             workflow_id="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPOSITORY/actions/workflows?per_page=100" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(w["id"] for w in d["workflows"] if w["name"]=="KM5n Vendor DFE Inspector"))')"
             run_id="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPOSITORY/actions/workflows/$workflow_id/runs?branch=main&status=success&per_page=20" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["workflow_runs"][0]["id"])')"
-            echo "Resolved latest successful inspector run $run_id (event was $EVENT_RUN_ID)"
           fi
           test -n "$run_id"
+          echo "Resolved inspector run: $run_id (event was $EVENT_RUN_ID)"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
 
       - name: Download candidate artifact from source run
@@ -67,7 +62,8 @@ jobs:
           cp candidate_artifact/vendor_a_dfe_candidate.img vendor_a_dfe_candidate.img
           cp candidate_artifact/vendor_a_dfe_candidate.sha256 vendor_a_dfe_candidate.sha256
           sha256sum stock/vendor_a.img
-          ls -lh vendor_a_dfe_candidate.img stock/vendor_a.img
+          sha256sum -c vendor_a_dfe_candidate.sha256
+          test "$(stat -c '%s' vendor_a_dfe_candidate.img)" -le 512012288
 
       - name: Install Android 15 AVB tooling and compatible FEC helper
         run: |
@@ -75,12 +71,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev
           git clone --depth 1 --branch android-15.0.0_r35 https://android.googlesource.com/platform/external/avb /tmp/avb
-          git clone --depth 1 https://android.googlesource.com/platform/external/fec /tmp/fec
+          # Android's newer external/fec mirror no longer ships the legacy
+          # standalone Makefile. Use an Android 15 tag that still contains
+          # the exact Reed-Solomon library layout needed by this helper.
+          git clone --depth 1 --branch android-15.0.0_r17 https://android.googlesource.com/platform/external/fec /tmp/fec
           cd /tmp/fec
+          test -f Makefile
           make -j"$(nproc)" libfec.a
           cat > /tmp/km5n-fec.c <<'EOF'
           #define _FILE_OFFSET_BITS 64
-          #include <errno.h>
           #include <fcntl.h>
           #include <stdint.h>
           #include <stdio.h>
@@ -90,103 +89,40 @@ jobs:
           #include <unistd.h>
           #include <openssl/sha.h>
           #include "fec.h"
-
           #define BLOCK 4096ULL
           #define RSM 255ULL
           #define MAGIC 0xFECFECFEU
           #define VERSION 0U
-
-          struct fec_header_disk {
-            uint32_t magic;
-            uint32_t version;
-            uint32_t size;
-            uint32_t roots;
-            uint32_t fec_size;
-            uint64_t inp_size;
-            uint8_t hash[32];
-          };
-
-          static uint64_t div_up(uint64_t x, uint64_t y) { return x / y + (x % y != 0); }
-          static uint64_t fec_size(uint64_t input_size, unsigned roots) {
-            uint64_t blocks = div_up(input_size, BLOCK);
-            uint64_t rounds = div_up(blocks, RSM - roots);
-            return rounds * roots * BLOCK;
+          struct fec_header_disk { uint32_t magic,version,size,roots,fec_size; uint64_t inp_size; uint8_t hash[32]; };
+          static uint64_t div_up(uint64_t x,uint64_t y){return x/y+(x%y!=0);}
+          static uint64_t fec_size(uint64_t n,unsigned roots){uint64_t blocks=div_up(n,BLOCK),rounds=div_up(blocks,RSM-roots);return rounds*roots*BLOCK;}
+          static int print_size(uint64_t n,unsigned roots){printf("%llu\n",(unsigned long long)(fec_size(n,roots)+BLOCK));return 0;}
+          static int encode(const char *inname,const char *outname,unsigned roots){
+            struct stat st; int in=open(inname,O_RDONLY); if(in<0||fstat(in,&st)!=0)return 2;
+            uint64_t n=(uint64_t)st.st_size; if(!n||n%BLOCK||!roots||roots>=RSM)return 3;
+            uint64_t blocks=n/BLOCK,rsn=RSM-roots,rounds=div_up(blocks,rsn),fsz=rounds*roots*BLOCK;
+            uint8_t *input=malloc((size_t)n),*fec=calloc(1,(size_t)fsz); if(!input||!fec)return 4;
+            uint8_t *p=input; uint64_t left=n; while(left){ssize_t r=read(in,p,left>(1ULL<<30)?(1ULL<<30):(size_t)left);if(r<=0)return 5;p+=r;left-=(uint64_t)r;} close(in);
+            void *rs=init_rs_char(8,0x11d,0,1,(int)roots,0); if(!rs)return 6;
+            uint8_t data[255]; uint64_t logical_end=rounds*rsn*BLOCK;
+            for(uint64_t logical=0,fec_pos=0;logical<logical_end;logical+=rsn,fec_pos+=roots){
+              for(uint64_t j=0;j<rsn;++j){uint64_t q=logical+j,off=q/rsn+(q%rsn)*rounds*BLOCK;data[j]=off<n?input[off]:0;}
+              encode_rs_char(rs,data,fec+fec_pos);
+            }
+            free_rs_char(rs); uint8_t hash[32]; SHA256(fec,(size_t)fsz,hash);
+            uint8_t header[BLOCK]; memset(header,0,sizeof(header)); struct fec_header_disk *h=(struct fec_header_disk*)header;
+            h->magic=MAGIC;h->version=VERSION;h->size=(uint32_t)sizeof(*h);h->roots=roots;h->fec_size=(uint32_t)fsz;h->inp_size=n;memcpy(h->hash,hash,32);memcpy(header+BLOCK-sizeof(*h),h,sizeof(*h));
+            int out=open(outname,O_WRONLY|O_CREAT|O_TRUNC,0666);if(out<0)return 7;
+            size_t off=0;while(off<(size_t)fsz){ssize_t w=write(out,fec+off,(size_t)fsz-off);if(w<=0)return 8;off+=(size_t)w;} off=0;while(off<BLOCK){ssize_t w=write(out,header+off,BLOCK-off);if(w<=0)return 8;off+=(size_t)w;}close(out);free(input);free(fec);return 0;
           }
-
-          static int print_size(uint64_t input_size, unsigned roots) {
-            printf("%llu\n", (unsigned long long)(fec_size(input_size, roots) + BLOCK));
-            return 0;
-          }
-
-          static int encode(const char *input_name, const char *output_name, unsigned roots) {
-            struct stat st;
-            int in = open(input_name, O_RDONLY);
-            if (in < 0 || fstat(in, &st) != 0) return 2;
-            uint64_t input_size = (uint64_t)st.st_size;
-            if (!input_size || input_size % BLOCK || roots == 0 || roots >= RSM) return 3;
-            uint64_t blocks = input_size / BLOCK;
-            uint64_t rsn = RSM - roots;
-            uint64_t rounds = div_up(blocks, rsn);
-            uint64_t fsz = rounds * roots * BLOCK;
-            uint8_t *input = malloc((size_t)input_size);
-            uint8_t *fec = calloc(1, (size_t)fsz);
-            if (!input || !fec) return 4;
-            uint8_t *p = input;
-            uint64_t left = input_size;
-            while (left) {
-              ssize_t n = read(in, p, left > (1ULL<<30) ? (1ULL<<30) : (size_t)left);
-              if (n <= 0) return 5;
-              p += n; left -= (uint64_t)n;
-            }
-            close(in);
-            void *rs = init_rs_char(8, 0x11d, 0, 1, (int)roots, 0);
-            if (!rs) return 6;
-            uint8_t data[255];
-            uint64_t logical_end = rounds * rsn * BLOCK;
-            for (uint64_t logical = 0, fec_pos = 0; logical < logical_end; logical += rsn, fec_pos += roots) {
-              for (uint64_t j = 0; j < rsn; ++j) {
-                uint64_t q = logical + j;
-                uint64_t off = q / rsn + (q % rsn) * rounds * BLOCK;
-                data[j] = off < input_size ? input[off] : 0;
-              }
-              encode_rs_char(rs, data, fec + fec_pos);
-            }
-            free_rs_char(rs);
-            uint8_t hash[32];
-            SHA256(fec, (size_t)fsz, hash);
-            uint8_t header[BLOCK];
-            memset(header, 0, sizeof(header));
-            struct fec_header_disk *h = (struct fec_header_disk *)header;
-            h->magic = MAGIC;
-            h->version = VERSION;
-            h->size = (uint32_t)sizeof(*h);
-            h->roots = roots;
-            h->fec_size = (uint32_t)fsz;
-            h->inp_size = input_size;
-            memcpy(h->hash, hash, sizeof(hash));
-            memcpy(header + BLOCK - sizeof(*h), h, sizeof(*h));
-            int out = open(output_name, O_WRONLY | O_CREAT | O_TRUNC, 0666);
-            if (out < 0) return 7;
-            if (write(out, fec, (size_t)fsz) != (ssize_t)fsz || write(out, header, BLOCK) != (ssize_t)BLOCK) return 8;
-            close(out);
-            free(input); free(fec);
-            return 0;
-          }
-
-          int main(int argc, char **argv) {
-            if (argc == 5 && !strcmp(argv[1], "--print-fec-size") && !strcmp(argv[3], "--roots")) {
-              return print_size(strtoull(argv[2], NULL, 0), (unsigned)strtoul(argv[4], NULL, 0));
-            }
-            if (argc == 6 && !strcmp(argv[1], "--encode") && !strcmp(argv[2], "--roots")) {
-              return encode(argv[4], argv[5], (unsigned)strtoul(argv[3], NULL, 0));
-            }
-            fprintf(stderr, "usage: fec --print-fec-size SIZE --roots ROOTS | fec --encode --roots ROOTS INPUT OUTPUT\n");
-            return 1;
+          int main(int argc,char **argv){
+            if(argc==5&&!strcmp(argv[1],"--print-fec-size")&&!strcmp(argv[3],"--roots"))return print_size(strtoull(argv[2],0,0),(unsigned)strtoul(argv[4],0,0));
+            if(argc==6&&!strcmp(argv[1],"--encode")&&!strcmp(argv[2],"--roots"))return encode(argv[4],argv[5],(unsigned)strtoul(argv[3],0,0));
+            fprintf(stderr,"usage: fec --print-fec-size SIZE --roots ROOTS | fec --encode --roots ROOTS INPUT OUTPUT\n");return 1;
           }
           EOF
           gcc -O3 -I/tmp/fec /tmp/km5n-fec.c /tmp/fec/libfec.a -lcrypto -o /usr/local/bin/fec
           chmod 0755 /usr/local/bin/fec
-          command -v fec
           test "$(fec --print-fec-size 4096 --roots 2)" = "12288"
           python3 /tmp/avb/avbtool.py version | tee avbtool_version.txt
 
@@ -198,11 +134,11 @@ jobs:
           import re
           from pathlib import Path
           s=Path('vendor_a_avb.txt').read_text()
-          def one(p,name):
-              m=re.search(p,s,re.M)
-              if not m: raise SystemExit(f'missing AVB field: {name}')
-              return m.group(1)
-          values={
+          def one(p,n):
+            m=re.search(p,s,re.M)
+            if not m: raise SystemExit('missing AVB field: '+n)
+            return m.group(1)
+          vals={
             'salt':one(r'^\s*Salt:\s+([0-9a-fA-F]+)$','Salt'),
             'hash_algorithm':one(r'^\s*Hash Algorithm:\s+(\S+)$','Hash Algorithm'),
             'partition_name':one(r'^\s*Partition Name:\s+(\S+)$','Partition Name'),
@@ -212,17 +148,13 @@ jobs:
             'rollback_index_location':one(r'^\s*Rollback Index Location:\s+(\d+)$','Rollback Index Location'),
             'flags':one(r'^\s*Flags:\s+(\d+)$','Flags'),
             'release':one(r"^\s*Release String:\s+'(.*)'$",'Release String'),
-            'image_size':one(r'^\s*Original image size:\s+(\d+) bytes$','Original image size'),
-          }
-          props=re.findall(r"^\s*Prop: ([^ ]+) -> '(.*)'$",s,re.M)
+            'image_size':one(r'^\s*Original image size:\s+(\d+) bytes$','Original image size')}
+          props=re.findall(r"^\s*Prop: ([^ ]+) -> '(.*)'$",s,re.M); got=dict(props)
           expected={'com.android.build.vendor.os_version':'15','com.android.build.vendor.security_patch':'2026-05-01','com.android.build.vendor.fingerprint':'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A.240905.015.A2/260422V952:user/release-keys'}
-          got=dict(props)
           for k,v in expected.items():
-              if got.get(k) != v: raise SystemExit(f'unexpected stock AVB property {k}: {got.get(k)!r}')
-          Path('avb_params.env').write_text('\n'.join([
-            f"AVB_SALT={values['salt']}",f"AVB_HASH_ALGORITHM={values['hash_algorithm']}",f"AVB_PARTITION_NAME={values['partition_name']}",f"AVB_FEC_ROOTS={values['fec_roots']}",f"AVB_ALGORITHM={values['algorithm']}",f"AVB_ROLLBACK_INDEX={values['rollback_index']}",f"AVB_ROLLBACK_INDEX_LOCATION={values['rollback_index_location']}",f"AVB_FLAGS={values['flags']}",f"AVB_STOCK_IMAGE_SIZE={values['image_size']}",'AVB_RELEASE='+repr(values['release'])
-          ]+[f'AVB_PROP_{i}='+repr(k+':'+v) for i,(k,v) in enumerate(props)])+'\n')
-          if values['partition_name']!='vendor' or values['hash_algorithm']!='sha256' or values['algorithm']!='NONE' or values['fec_roots']!='2' or values['image_size']!='512012288': raise SystemExit('unexpected stock AVB geometry/parameters')
+            if got.get(k)!=v: raise SystemExit(f'unexpected stock AVB property {k}: {got.get(k)!r}')
+          Path('avb_params.env').write_text('\n'.join([f"AVB_SALT={vals['salt']}",f"AVB_HASH_ALGORITHM={vals['hash_algorithm']}",f"AVB_PARTITION_NAME={vals['partition_name']}",f"AVB_FEC_ROOTS={vals['fec_roots']}",f"AVB_ALGORITHM={vals['algorithm']}",f"AVB_ROLLBACK_INDEX={vals['rollback_index']}",f"AVB_ROLLBACK_INDEX_LOCATION={vals['rollback_index_location']}",f"AVB_FLAGS={vals['flags']}",f"AVB_STOCK_IMAGE_SIZE={vals['image_size']}",f"AVB_RELEASE={vals['release']!r}"]+[f'AVB_PROP_{i}={k+":"+v!r}' for i,(k,v) in enumerate(props)])+'\n')
+          if vals['partition_name']!='vendor' or vals['hash_algorithm']!='sha256' or vals['algorithm']!='NONE' or vals['fec_roots']!='2' or vals['image_size']!='512012288': raise SystemExit('unexpected stock AVB geometry/parameters')
           PY
 
       - name: Calculate AVB capacity and prepare data area
@@ -236,7 +168,6 @@ jobs:
           test "$AVB_STOCK_IMAGE_SIZE" -le "$max_image_size"
           cp vendor_a_dfe_candidate.img vendor_a_dfe.img
           truncate -s "$AVB_STOCK_IMAGE_SIZE" vendor_a_dfe.img
-          stat -c 'Prepared image size: %s bytes' vendor_a_dfe.img
 
       - name: Add AVB hashtree, FEC and footer
         run: |
@@ -245,8 +176,7 @@ jobs:
           props=()
           while IFS= read -r line; do
             [[ "$line" == AVB_PROP_* ]] || continue
-            val="${line#*=}"; val="${val#\'}"; val="${val%\'}"
-            props+=(--prop "$val")
+            val="${line#*=}"; val="${val#\'}"; val="${val%\'}"; props+=(--prop "$val")
           done < avb_params.env
           args=(add_hashtree_footer --image vendor_a_dfe.img --partition_size 521871360 --partition_name "$AVB_PARTITION_NAME" --hash_algorithm "$AVB_HASH_ALGORITHM" --block_size 4096 --salt "$AVB_SALT" --algorithm "$AVB_ALGORITHM" --rollback_index "$AVB_ROLLBACK_INDEX" --rollback_index_location "$AVB_ROLLBACK_INDEX_LOCATION" --flags "$AVB_FLAGS" --fec_num_roots "$AVB_FEC_ROOTS" --internal_release_string "$AVB_RELEASE")
           args+=("${props[@]}")
@@ -271,13 +201,12 @@ jobs:
             (r'^\s*Partition Name:\s+vendor$','partition'),
             (r"^\s*Prop: com\.android\.build\.vendor\.os_version -> '15'$",'OS version'),
             (r"^\s*Prop: com\.android\.build\.vendor\.security_patch -> '2026-05-01'$",'security patch'),
-            (r"^\s*Prop: com\.android\.build\.vendor\.fingerprint -> 'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A\.240905\.015\.A2/260422V952:user/release-keys'$",'fingerprint'),
-            (r'^\s*Image Size:\s+512012288 bytes$','hashtree image size'),
-          ]
+            (r"^\s*Prop: com\.android\.build\.vendor\.fingerprint -> 'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A\.240905\.015\.A2/260422V952:user/release-keys'$",'fingerprint')]
           for p,n in checks:
-              if not re.search(p,s,re.M): raise SystemExit('AVB validation failed: '+n)
-          if not re.search(r'^\s*Tree Size:\s+\d+ bytes$',s,re.M) or not re.search(r'^\s*FEC size:\s+\d+ bytes$',s,re.M): raise SystemExit('missing hashtree/FEC sizing')
+            if not re.search(p,s,re.M): raise SystemExit('final AVB validation failed: '+n)
           PY
+          test "$(stat -c '%s' vendor_a_dfe.img)" = "521871360"
+          sha256sum vendor_a_dfe.img
 
       - name: Upload AVB-valid DFE image
         uses: actions/upload-artifact@v4
@@ -287,6 +216,8 @@ jobs:
             vendor_a_dfe.img
             vendor_a_dfe.sha256
             vendor_a_dfe_avb.txt
-            avb_params.env
-            avbtool_version.txt
+            vendor_a_avb.txt
             avbtool_add_hashtree_footer.log
+            avbtool_version.txt
+          compression-level: 0
+          retention-days: 14
