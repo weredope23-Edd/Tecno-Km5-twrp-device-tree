@@ -1,0 +1,76 @@
+name: KM5n Vendor DFE Inspector
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inspect:
+    name: Inspect stock vendor_a.img
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository with LFS
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+          fetch-depth: 1
+
+      - name: Verify stock vendor image
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f stock/vendor_a.img
+          sha256sum stock/vendor_a.img | tee vendor_a.sha256
+          test "$(sha256sum stock/vendor_a.img | awk '{print $1}')" = "b2d47a2d341f651ec4ad175273f07d987f2c068b94d46878bba589642793ef38"
+          stat -c 'vendor_a.img: %s bytes' stock/vendor_a.img
+
+      - name: Install EROFS tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y erofs-utils
+          dump.erofs --help || true
+          fsck.erofs --help || true
+          mkfs.erofs --help || true
+
+      - name: Inspect EROFS metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          dump.erofs -s stock/vendor_a.img | tee vendor_dump_summary.txt
+          dump.erofs -S stock/vendor_a.img | tee vendor_dump_superblock.txt
+          fsck.erofs -v stock/vendor_a.img | tee vendor_fsck.txt
+
+      - name: Extract vendor filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p extracted_vendor
+          fsck.erofs --extract=extracted_vendor stock/vendor_a.img
+          test -f extracted_vendor/etc/fstab.mt6768
+          cp extracted_vendor/etc/fstab.mt6768 stock_fstab.mt6768
+          echo '--- stock vendor/etc/fstab.mt6768 ---'
+          cat stock_fstab.mt6768
+
+      - name: Audit encryption entry
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- /data fstab lines ---'
+          grep -nE '(^|[[:space:]])/data([[:space:]]|$)' stock_fstab.mt6768 || true
+          echo '--- encryption-related tokens ---'
+          grep -nE 'inlinecrypt|fileencryption|encryptable|keydirectory|metadata' stock_fstab.mt6768 || true
+
+      - name: Upload inspection report
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-vendor-erofs-inspection
+          path: |
+            vendor_a.sha256
+            vendor_dump_summary.txt
+            vendor_dump_superblock.txt
+            vendor_fsck.txt
+            stock_fstab.mt6768
+          if-no-files-found: error
