@@ -1,9 +1,6 @@
-name: Build TWRP KM5n (TWRP 14.1)
+name: Build TWRP KM5n (TWRP 14)
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:
@@ -54,7 +51,7 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Sync TWRP 14.1 source
+      - name: Sync TWRP 14 source
         run: |
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
@@ -62,15 +59,15 @@ jobs:
           cd "$TWRP_DIR"
 
           repo init \
-            -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git \
-            -b twrp-14.1 \
+            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
+            -b twrp-14 \
             --depth=1 \
             --partial-clone \
             --clone-filter=blob:none
 
           mkdir -p .repo/local_manifests
           curl -fsSL \
-            https://raw.githubusercontent.com/TWRP-Test/platform_manifest_twrp_aosp/twrp-14.1/remove-minimal.xml \
+            https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml \
             -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
 
@@ -111,15 +108,15 @@ jobs:
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
           cd "$TWRP_DIR"
-          if grep -R -n 'twrp-16\\.0' device/tecno/km5n .repo/local_manifests; then
-            echo 'ERROR: TWRP 16.0 reference found in TWRP 14.1 build inputs.'
+          if grep -R -nE 'twrp-14\\.1|twrp-16\\.0' device/tecno/km5n .repo/local_manifests; then
+            echo 'ERROR: newer TWRP branch reference found in TWRP 14 build inputs.'
             exit 1
           fi
           grep -q 'PRODUCT_NAME := twrp_km5n' device/tecno/km5n/twrp_km5n.mk
           grep -q 'TARGET_BOARD_PLATFORM := mt6768' device/tecno/km5n/BoardConfig.mk
           grep -q 'BOARD_BOOT_HEADER_VERSION := 4' device/tecno/km5n/BoardConfig.mk
 
-      - name: Build TWRP 14.1 vendor_boot
+      - name: Build TWRP 14 vendor_boot
         run: |
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
