@@ -3,8 +3,7 @@ name: KM5n Vendor DFE Inspector
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
     paths:
       - '.github/workflows/km5n-dfe-vendor-inspect.yml'
@@ -24,7 +23,6 @@ jobs:
           fetch-depth: 1
 
       - name: Verify stock vendor image
-        shell: bash
         run: |
           set -euo pipefail
           test -f stock/vendor_a.img
@@ -33,14 +31,12 @@ jobs:
           stat -c 'vendor_a.img: %s bytes' stock/vendor_a.img | tee vendor_size.txt
 
       - name: Install EROFS build dependencies
-        shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y autoconf automake autopoint libtool pkg-config uuid-dev zlib1g-dev liblz4-dev liblzma-dev libzstd-dev libfuse-dev git build-essential python3 python3-pip
 
-      - name: Build a modern liblzma for EROFS MicroLZMA support
-        shell: bash
+      - name: Build modern liblzma
         run: |
           set -euo pipefail
           git clone --depth 1 --branch v5.4.6 https://github.com/tukaani-project/xz.git /tmp/xz
@@ -52,8 +48,7 @@ jobs:
           sudo ldconfig
           pkg-config --modversion liblzma
 
-      - name: Build EROFS v1.9.3 with compression support
-        shell: bash
+      - name: Build EROFS v1.9.3
         run: |
           set -euo pipefail
           export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
@@ -71,8 +66,7 @@ jobs:
           dump.erofs -V
           mkfs.erofs --help | tee mkfs_erofs_help.txt
 
-      - name: Inspect EROFS metadata and integrity
-        shell: bash
+      - name: Inspect stock EROFS
         run: |
           set -euo pipefail
           dump.erofs -s stock/vendor_a.img | tee vendor_dump_summary.txt
@@ -80,7 +74,6 @@ jobs:
           fsck.erofs stock/vendor_a.img | tee vendor_fsck.txt
 
       - name: Extract vendor filesystem
-        shell: bash
         run: |
           set -euo pipefail
           rm -rf extracted_vendor modified_vendor
@@ -91,8 +84,7 @@ jobs:
           cp extracted_vendor/etc/fstab.mt6768 stock_fstab.mt6768
           cat stock_fstab.mt6768
 
-      - name: Audit and apply Hovatek-style DFE fstab change
-        shell: bash
+      - name: Apply DFE fstab change
         run: |
           set -euo pipefail
           data_line="$(grep -E '(^|[[:space:]])/data([[:space:]]|$)' stock_fstab.mt6768 | head -n1 || true)"
@@ -104,28 +96,20 @@ jobs:
           grep -q '/metadata' stock_fstab.mt6768
           python3 - <<'PY'
           from pathlib import Path
-          p = Path('modified_vendor/etc/fstab.mt6768')
-          s = p.read_text()
-          old = s
-          for token in [
-              ',inlinecrypt',
-              ',fileencryption=aes-256-xts:aes-256-cts:v2',
-              ',keydirectory=/metadata/vold/metadata_encryption',
-              'fileencryption=aes-256-xts:aes-256-cts:v2,',
-              'keydirectory=/metadata/vold/metadata_encryption,',
-          ]:
-              s = s.replace(token, '')
-          lines = []
+          p=Path('modified_vendor/etc/fstab.mt6768')
+          s=p.read_text(); old=s
+          for t in [',inlinecrypt',',fileencryption=aes-256-xts:aes-256-cts:v2',',keydirectory=/metadata/vold/metadata_encryption','fileencryption=aes-256-xts:aes-256-cts:v2,','keydirectory=/metadata/vold/metadata_encryption,']:
+              s=s.replace(t,'')
+          out=[]
           for line in s.splitlines():
               if '/data' in line.split() and 'encryptable=/dev/block/by-name/metadata' not in line:
-                  parts = line.split()
-                  if len(parts) >= 4:
-                      parts[3] += ',encryptable=/dev/block/by-name/metadata'
-                      line = ' '.join(parts)
-              lines.append(line)
-          s = '\n'.join(lines) + ('\n' if s.endswith('\n') else '')
-          if s == old:
-              raise SystemExit('DFE edit made no changes')
+                  parts=line.split()
+                  if len(parts)>=4:
+                      parts[3]+=',encryptable=/dev/block/by-name/metadata'
+                      line=' '.join(parts)
+              out.append(line)
+          s='\n'.join(out)+('\\n' if s.endswith('\\n') else '')
+          if s==old: raise SystemExit('DFE edit made no changes')
           p.write_text(s)
           PY
           cat modified_vendor/etc/fstab.mt6768
@@ -135,138 +119,108 @@ jobs:
           ! grep -q 'keydirectory=/metadata/vold/metadata_encryption' modified_vendor/etc/fstab.mt6768
           diff -u stock_fstab.mt6768 modified_vendor/etc/fstab.mt6768 | tee fstab_dfe.patch
 
-      - name: Derive original EROFS metadata and feature hints
-        shell: bash
+      - name: Derive safe EROFS rebuild hints
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import re
-          import shlex
           from pathlib import Path
-          s = Path('vendor_dump_summary.txt').read_text(errors='replace')
-
-          def value(*labels, default=''):
-              # dump.erofs output has changed spelling/capitalization between
-              # releases. Match the complete label literally, but allow any
-              # amount of whitespace around the colon.
-              for label in labels:
-                  pat = r'^\s*' + re.escape(label) + r'\s*:\s*(.*?)\s*$'
-                  m = re.search(pat, s, re.I | re.M)
-                  if m:
-                      return m.group(1).strip()
+          s=Path('vendor_dump_summary.txt').read_text(errors='replace')
+          def field(names, default=''):
+              for n in names:
+                  m=re.search(r'^\s*'+re.escape(n)+r'\s*:\s*(.*?)\s*$',s,re.I|re.M)
+                  if m:return m.group(1).strip()
               return default
-
-          uuid = value('Filesystem UUID', 'UUID')
-          block = value('Block size', 'Filesystem block size', default='4096')
-          algs = value('Filesystem compr_algs', 'Filesystem compression algorithms', 'Compression algorithms')
-          features = value('Filesystem features', 'Features')
-
-          # Also inspect the whole dump, because some dump.erofs versions print
-          # feature details on separate lines rather than in one feature field.
-          normalized = re.sub(r'[^a-z0-9_ -]+', ' ', s.lower())
-          feature_tokens = []
-          for token in ('ztailpacking', 'fragments', 'dedupe', 'big_pcluster'):
-              if token in normalized.replace(' ', '') or re.search(r'\b' + re.escape(token) + r'\b', normalized):
-                  feature_tokens.append(token)
-          # Recognize the human-readable spelling as well.
-          if re.search(r'big[ _-]+pcluster', normalized):
-              if 'big_pcluster' not in feature_tokens:
-                  feature_tokens.append('big_pcluster')
-
-          # Compression can also appear as "lz4hc"/"lz4" in the superblock
-          # dump without a dedicated compression-algorithms label.
-          if not algs:
-              for candidate in ('lz4hc', 'lz4', 'lzma', 'zstd', 'deflate'):
-                  if re.search(r'\b' + candidate + r'\b', s, re.I):
-                      algs = candidate
-                      break
-
-          features_combined = ' '.join(x for x in [features, *feature_tokens] if x).strip()
-          Path('erofs_rebuild_hints.txt').write_text(
-              f'UUID={shlex.quote(uuid)}\n'
-              f'BLOCK_SIZE={shlex.quote(block)}\n'
-              f'COMPR_ALGS={shlex.quote(algs)}\n'
-              f'FEATURES={shlex.quote(features_combined)}\n'
-          )
-          print(f'UUID={uuid}')
-          print(f'BLOCK_SIZE={block}')
-          print(f'COMPR_ALGS={algs}')
-          print(f'FEATURES={features_combined}')
+          uuid=field(['Filesystem UUID','UUID'])
+          block_raw=field(['Block size','Filesystem block size'],'4096')
+          m=re.search(r'\d+',block_raw); block=m.group(0) if m else '4096'
+          if block not in ('4096','8192','16384','32768','65536'):
+              block='4096'
+          alg=field(['Filesystem compr_algs','Filesystem compression algorithms','Compression algorithms'])
+          low=alg.lower()
+          if 'lz4hc' in low: alg='lz4hc'
+          elif re.search(r'\blz4\b',low): alg='lz4'
+          elif 'lzma' in low: alg='lzma'
+          elif 'zstd' in low: alg='zstd'
+          elif 'deflate' in low: alg='deflate'
+          else:
+              alg=''
+              for a in ('lz4hc','lz4','lzma','zstd','deflate'):
+                  if re.search(r'\b'+a+r'\b',s,re.I): alg=a; break
+          norm=s.lower().replace('-','_')
+          feats=[]
+          for f in ('ztailpacking','fragments','dedupe'):
+              if re.search(r'\b'+f+r'\b',norm): feats.append(f)
+          big=bool(re.search(r'\bbig[_ -]?pcluster\b',norm))
+          Path('erofs_rebuild_hints.txt').write_text('\n'.join([f'UUID={uuid}',f'BLOCK_SIZE={block}',f'COMPR_ALG={alg}',f'BIG_PCLUSTER={int(big)}',f'FEATURES={" ".join(feats)}'])+'\n')
+          print(Path('erofs_rebuild_hints.txt').read_text(),end='')
           PY
-          cat erofs_rebuild_hints.txt
 
-      - name: Build validated standalone DFE EROFS candidate
+      - name: Build validated DFE EROFS candidate
         id: build_candidate
         continue-on-error: true
-        shell: bash
         run: |
-          set -euo pipefail
+          set -u
           source erofs_rebuild_hints.txt
-          orig_size="$(stat -c '%s' stock/vendor_a.img)"
-          uuid_arg=()
-          if [[ "${UUID:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then uuid_arg=(-U "$UUID"); fi
-
-          feature_args=()
-          feature_text=" ${FEATURES:-} "
-          [[ "$feature_text" =~ (^|[[:space:]])ztailpacking([[:space:]]|$) ]] && feature_args+=(-Eztailpacking)
-          [[ "$feature_text" =~ (^|[[:space:]])fragments([[:space:]]|$) ]] && feature_args+=(-Efragments)
-          [[ "$feature_text" =~ (^|[[:space:]])dedupe([[:space:]]|$) ]] && feature_args+=(-Ededupe)
-          big_pcluster=0
-          [[ "$feature_text" =~ (^|[[:space:]])big_pcluster([[:space:]]|$) ]] && big_pcluster=1
-
+          orig_size=$(stat -c '%s' stock/vendor_a.img)
           : > rebuild_attempts.txt
-          best=''
-          best_size=0
-          if ((big_pcluster)); then
-            clusters=(1048576 524288 262144 131072 65536 32768 16384 4096)
-          else
-            clusters=(4096)
-          fi
-
-          stock_alg="${COMPR_ALGS%%:*}"
-          compressors=()
-          case "$stock_alg" in
-            lz4hc) compressors=('lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4') ;;
-            lz4) compressors=('lz4,9' 'lz4' 'lz4hc,12' 'lz4hc,9') ;;
-            lzma) compressors=('lzma,9' 'lzma,6' 'lz4hc,12' 'lz4hc,9') ;;
-            zstd) compressors=('zstd,19' 'lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4') ;;
-            *) compressors=('lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4' 'lzma,6' 'lzma,9' 'zstd,19') ;;
+          best=''; best_size=0
+          # Try stock-compatible optional features first, then a conservative
+          # feature-free rebuild. This prevents one unsupported feature hint
+          # from killing every candidate attempt.
+          feature_sets=()
+          stock_features=''
+          [[ " ${FEATURES:-} " =~ [[:space:]]ztailpacking[[:space:]] ]] && stock_features+='ztailpacking,'
+          [[ " ${FEATURES:-} " =~ [[:space:]]fragments[[:space:]] ]] && stock_features+='fragments,'
+          [[ " ${FEATURES:-} " =~ [[:space:]]dedupe[[:space:]] ]] && stock_features+='dedupe,'
+          stock_features="${stock_features%,}"
+          [[ -n "$stock_features" ]] && feature_sets+=("$stock_features")
+          feature_sets+=("")
+          clusters=(4096)
+          if [[ "${BIG_PCLUSTER:-0}" == 1 ]]; then clusters=(65536 131072 262144 524288 1048576 4096); fi
+          comps=()
+          case "${COMPR_ALG:-}" in
+            lz4hc) comps=('lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4') ;;
+            lz4) comps=('lz4,9' 'lz4' 'lz4hc,12' 'lz4hc,9') ;;
+            lzma) comps=('lzma,9' 'lzma,6' 'lz4hc,12' 'lz4hc,9') ;;
+            zstd) comps=('zstd,19' 'zstd,15' 'lz4hc,12' 'lz4hc,9') ;;
+            deflate) comps=('deflate,9' 'deflate,6' 'lz4hc,12' 'lz4hc,9') ;;
+            *) comps=('lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4' 'lzma,6' 'zstd,19') ;;
           esac
-          compressors+=("")
-
-          for cluster in "${clusters[@]}"; do
-            for comp in "${compressors[@]}"; do
-              label="${comp:-uncompressed}"
-              safe="${label//,/-}-${cluster}"
-              out="candidate-${safe}.img"
-              echo "=== compression=${label}, pcluster=${cluster}, features=${feature_args[*]:-none} ===" | tee -a rebuild_attempts.txt
-              rm -f "$out" "${out}.fsck"
-              args=(-b "${BLOCK_SIZE:-4096}")
-              ((${#uuid_arg[@]})) && args+=("${uuid_arg[@]}")
-              [[ -n "$comp" ]] && args+=(-z "$comp" -C "$cluster")
-              if mkfs.erofs "${args[@]}" "${feature_args[@]}" "$out" modified_vendor >> rebuild_attempts.txt 2>&1; then
-                size="$(stat -c '%s' "$out")"
-                echo "$out: $size bytes" | tee -a rebuild_attempts.txt
-                if [[ "$size" -le "$orig_size" ]] && fsck.erofs "$out" > "${out}.fsck" 2>&1; then
-                  best="$out"
-                  best_size="$size"
-                  echo "VALID CANDIDATE: $out" | tee -a rebuild_attempts.txt
-                  break 2
+          comps+=("")
+          for feats in "${feature_sets[@]}"; do
+            for cluster in "${clusters[@]}"; do
+              for comp in "${comps[@]}"; do
+                label="${comp:-uncompressed}"
+                out="candidate-${label//,/-}-${cluster}.img"
+                echo "=== features=${feats:-none} compression=$label cluster=$cluster ===" | tee -a rebuild_attempts.txt
+                rm -f "$out" "$out.fsck"
+                args=(-b "${BLOCK_SIZE:-4096}")
+                [[ -n "${UUID:-}" ]] && args+=(-U "$UUID")
+                [[ -n "$comp" ]] && args+=(-z "$comp" -C "$cluster")
+                [[ -n "$feats" ]] && args+=(-E "$feats")
+                if mkfs.erofs "${args[@]}" "$out" modified_vendor >>rebuild_attempts.txt 2>&1; then
+                  size=$(stat -c '%s' "$out")
+                  echo "built $out: $size bytes" | tee -a rebuild_attempts.txt
+                  if [[ "$size" -le "$orig_size" ]] && fsck.erofs "$out" >"$out.fsck" 2>&1; then
+                    best="$out"; best_size="$size"
+                    echo "VALID CANDIDATE: $out" | tee -a rebuild_attempts.txt
+                    break 3
+                  fi
+                  echo "rejected: size or fsck" | tee -a rebuild_attempts.txt
+                  tail -n 30 "$out.fsck" 2>/dev/null | tee -a rebuild_attempts.txt || true
+                else
+                  echo "mkfs failed: $out" | tee -a rebuild_attempts.txt
+                  tail -n 20 rebuild_attempts.txt
                 fi
-                echo "Rejected: too large or fsck failed" | tee -a rebuild_attempts.txt
-                [[ -f "${out}.fsck" ]] && tail -n 40 "${out}.fsck" | tee -a rebuild_attempts.txt
-              else
-                echo "mkfs.erofs failed for $label at pcluster $cluster" | tee -a rebuild_attempts.txt
-              fi
-              rm -f "$out" "${out}.fsck"
+                rm -f "$out" "$out.fsck"
+              done
             done
           done
-
           if [[ -z "$best" ]]; then
             echo 'NO VALID CANDIDATE WAS BUILT' | tee -a rebuild_attempts.txt
             exit 1
           fi
-
           cp "$best" vendor_a_dfe_candidate.img
           sha256sum vendor_a_dfe_candidate.img | tee vendor_a_dfe_candidate.sha256
           printf 'candidate_size=%s\noriginal_size=%s\n' "$best_size" "$orig_size" | tee candidate_size.txt
@@ -274,11 +228,12 @@ jobs:
           dump.erofs -S vendor_a_dfe_candidate.img | tee candidate_dump_superblock.txt
           fsck.erofs vendor_a_dfe_candidate.img | tee candidate_fsck.txt
 
-      - name: Package diagnostics even when candidate build fails
+      - name: Package diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: km5n-vendor-dfe-diagnostics
+          if-no-files-found: warn
           path: |
             vendor_a.sha256
             vendor_size.txt
@@ -298,18 +253,16 @@ jobs:
             candidate_dump_summary.txt
             candidate_dump_superblock.txt
             candidate_fsck.txt
-          if-no-files-found: warn
 
-      - name: Inspect candidate AVB footer
+      - name: Inspect AVB footer
         if: steps.build_candidate.outcome == 'success'
-        shell: bash
         run: |
           set -euo pipefail
           git clone --depth 1 https://android.googlesource.com/platform/external/avb /tmp/avb
           python3 /tmp/avb/avbtool.py info_image --image stock/vendor_a.img | tee vendor_a_avb.txt
           python3 /tmp/avb/avbtool.py info_image --image vendor_a_dfe_candidate.img | tee vendor_a_dfe_candidate_avb.txt || true
 
-      - name: Upload successful DFE candidate package
+      - name: Upload successful candidate
         if: steps.build_candidate.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
@@ -324,16 +277,11 @@ jobs:
             vendor_a_avb.txt
             vendor_a_dfe_candidate_avb.txt
             stock_fstab.mt6768
-            modified_vendor/etc/fstab.mt6768
             fstab_dfe.patch
             erofs_rebuild_hints.txt
-            rebuild_attempts.txt
-          if-no-files-found: error
 
       - name: Fail if no validated candidate exists
         if: steps.build_candidate.outcome != 'success'
-        shell: bash
         run: |
-          echo 'The EROFS candidate builder did not produce a flashable image.'
-          echo 'The km5n-vendor-dfe-diagnostics artifact contains the complete rebuild attempts and error output.'
+          echo 'DFE fstab edit succeeded, but no validated vendor_a EROFS candidate was produced.'
           exit 1
