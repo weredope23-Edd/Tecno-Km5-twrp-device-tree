@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: 'Successful KM5n Vendor DFE Inspector run ID'
+        description: 'KM5n Vendor DFE Inspector run ID'
         required: true
         type: string
   workflow_run:
@@ -14,10 +14,7 @@ on:
 jobs:
   finalize:
     name: Finalize and validate AVB-correct vendor DFE image
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main')
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-22.04
     permissions:
       actions: read
@@ -93,6 +90,7 @@ jobs:
               'rollback_index_location':one(r'^\s*Rollback Index Location:\s+(\d+)$','Rollback Index Location'),
               'flags':one(r'^\s*Flags:\s+(\d+)$','Flags'),
               'release':one(r"^\s*Release String:\s+'(.*)'$",'Release String'),
+              'image_size':one(r'^\s*Image size:\s+(\d+) bytes$','Image size'),
           }
           props=re.findall(r"^\s*Prop: ([^ ]+) -> '(.*)'$",s,re.M)
           Path('avb_params.env').write_text('\n'.join([
@@ -104,6 +102,7 @@ jobs:
               f"AVB_ROLLBACK_INDEX={values['rollback_index']}",
               f"AVB_ROLLBACK_INDEX_LOCATION={values['rollback_index_location']}",
               f"AVB_FLAGS={values['flags']}",
+              f"AVB_STOCK_IMAGE_SIZE={values['image_size']}",
               'AVB_RELEASE='+repr(values['release']),
           ]+[f'AVB_PROP_{i}='+repr(k+':'+v) for i,(k,v) in enumerate(props)])+'\n')
           print(Path('avb_params.env').read_text(),end='')
@@ -111,7 +110,7 @@ jobs:
           if values['hash_algorithm'] != 'sha256': raise SystemExit('unexpected hash algorithm')
           if values['algorithm'] != 'NONE': raise SystemExit('unexpected AVB signing algorithm')
           if values['fec_roots'] != '2': raise SystemExit('unexpected FEC roots')
-          if not re.search(r'^\s*Image size:\s+512012288 bytes$',s,re.M): raise SystemExit('unexpected stock AVB image size')
+          if values['image_size'] != '512012288': raise SystemExit('unexpected stock AVB image size')
 
       - name: Build AVB-finalized DFE image
         run: |
@@ -119,6 +118,17 @@ jobs:
           source avb_params.env
           partition_size=521871360
           cp vendor_a_dfe_candidate.img vendor_a_dfe.img
+          candidate_size="$(stat -c '%s' vendor_a_dfe.img)"
+          echo "Raw candidate size: $candidate_size"
+          echo "Stock AVB data-area size: $AVB_STOCK_IMAGE_SIZE"
+          if [ "$candidate_size" -gt "$AVB_STOCK_IMAGE_SIZE" ]; then
+            echo 'Candidate is larger than the stock AVB data area.'
+            exit 1
+          fi
+          if [ "$candidate_size" -lt "$AVB_STOCK_IMAGE_SIZE" ]; then
+            truncate -s "$AVB_STOCK_IMAGE_SIZE" vendor_a_dfe.img
+            echo "Padded candidate with trailing zero blocks to $AVB_STOCK_IMAGE_SIZE bytes"
+          fi
           props=()
           while IFS= read -r line; do
             [[ "$line" == AVB_PROP_* ]] || continue
@@ -126,11 +136,12 @@ jobs:
             val="${val#\'}"; val="${val%\'}"
             props+=(--prop "$val")
           done < avb_params.env
-          args=(add_hash_footer
+          args=(add_hashtree_footer
                 --image vendor_a_dfe.img
                 --partition_size "$partition_size"
                 --partition_name "$AVB_PARTITION_NAME"
                 --hash_algorithm "$AVB_HASH_ALGORITHM"
+                --block_size 4096
                 --salt "$AVB_SALT"
                 --algorithm "$AVB_ALGORITHM"
                 --rollback_index "$AVB_ROLLBACK_INDEX"
@@ -139,7 +150,8 @@ jobs:
                 --fec_num_roots "$AVB_FEC_ROOTS"
                 --internal_release_string "$AVB_RELEASE")
           args+=("${props[@]}")
-          python3 /tmp/avb/avbtool.py "${args[@]}" | tee avbtool_add_hash_footer.log
+          printf 'Running: avbtool.py'; printf ' %q' "${args[@]}"; printf '\n'
+          python3 /tmp/avb/avbtool.py "${args[@]}" | tee avbtool_add_hashtree_footer.log
           test "$(stat -c '%s' vendor_a_dfe.img)" = "$partition_size"
           sha256sum vendor_a_dfe.img | tee vendor_a_dfe.sha256
 
@@ -153,7 +165,7 @@ jobs:
           s=Path('vendor_a_dfe_avb.txt').read_text()
           checks=[
               (r'^\s*Footer version:\s+1\.0$', 'footer version'),
-              (r'^\s*Image size:\s+512012288 bytes$', 'image size'),
+              (r'^\s*Original image size:\s+512012288 bytes$', 'original image size'),
               (r'^\s*Algorithm:\s+NONE$', 'algorithm'),
               (r'^\s*FEC num roots:\s+2$', 'FEC roots'),
               (r'^\s*Hash Algorithm:\s+sha256$', 'hash algorithm'),
@@ -169,7 +181,7 @@ jobs:
           tree=re.search(r'^\s*Tree Size:\s+(\d+) bytes$',s,re.M)
           fec=re.search(r'^\s*FEC size:\s+(\d+) bytes$',s,re.M)
           if not tree or not fec: raise SystemExit('missing hashtree/FEC sizing')
-          Path('vendor_a_dfe_avb_validation.txt').write_text('AVB finalization and descriptor validation passed\n')
+          Path('vendor_a_dfe_avb_validation.txt').write_text('AVB finalization and hashtree/FEC descriptor validation passed\n')
           PY
 
       - name: Upload AVB-valid DFE image
@@ -182,5 +194,5 @@ jobs:
             vendor_a_dfe_avb.txt
             vendor_a_dfe_avb_validation.txt
             avb_params.env
-            avbtool_add_hash_footer.log
+            avbtool_add_hashtree_footer.log
             source_artifact.txt
