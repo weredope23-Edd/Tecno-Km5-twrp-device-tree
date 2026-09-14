@@ -123,14 +123,13 @@ jobs:
           s = s.replace('keydirectory=/metadata/vold/metadata_encryption,', '')
           lines = []
           for line in s.splitlines():
-              if '/data' in line.split():
-                  if 'encryptable=/dev/block/by-name/metadata' not in line:
-                      parts = line.split()
-                      if len(parts) >= 4:
-                          opts = parts[3].split(',')
-                          opts.append('encryptable=/dev/block/by-name/metadata')
-                          parts[3] = ','.join(opts)
-                          line = ' '.join(parts)
+              if '/data' in line.split() and 'encryptable=/dev/block/by-name/metadata' not in line:
+                  parts = line.split()
+                  if len(parts) >= 4:
+                      opts = parts[3].split(',')
+                      opts.append('encryptable=/dev/block/by-name/metadata')
+                      parts[3] = ','.join(opts)
+                      line = ' '.join(parts)
               lines.append(line)
           s = '\n'.join(lines) + ('\n' if s.endswith('\n') else '')
           if s == old:
@@ -146,7 +145,7 @@ jobs:
           ! grep -q 'keydirectory=/metadata/vold/metadata_encryption' modified_vendor/etc/fstab.mt6768
           diff -u stock_fstab.mt6768 modified_vendor/etc/fstab.mt6768 | tee fstab_dfe.patch
 
-      - name: Derive original EROFS UUID, block size and compression hints
+      - name: Derive original EROFS metadata hints
         shell: bash
         run: |
           set -euo pipefail
@@ -154,16 +153,19 @@ jobs:
           import re
           from pathlib import Path
           s = Path('vendor_dump_summary.txt').read_text(errors='replace')
-          uuid = re.search(r'(?i)\bUUID\s*[:=]\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b', s)
-          block = re.search(r'(?i)(?:block\s*size|blksz|blocksize)\s*[:=]\s*(\d+)', s)
-          comps = []
+          def first(pattern, default=''):
+              m = re.search(pattern, s, re.I | re.M)
+              return m.group(1) if m else default
+          uuid = first(r'UUID\s*:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})')
+          block = first(r'(?:Block size|blksz|blocksize)\s*:\s*(\d+)', '4096')
+          features = first(r'(?:feature|features)\s*:\s*([^\n]+)', '')
+          zfeatures = first(r'(?:zfeature[_ -]*bits|zfeature[_ -]*bits)\s*[:=]\s*(0x[0-9a-f]+|\d+)', '')
+          compression = ''
           for x in ('lz4hc','lz4','lzma','zstd','deflate'):
-              if re.search(r'(?i)\b' + re.escape(x) + r'\b', s):
-                  comps.append(x)
-          out = []
-          out.append('UUID=' + (uuid.group(1) if uuid else ''))
-          out.append('BLOCK_SIZE=' + (block.group(1) if block else '4096'))
-          out.append('COMPRESSION=' + (comps[0] if comps else 'lz4hc'))
+              if re.search(r'\b' + re.escape(x) + r'\b', s, re.I):
+                  compression = x
+                  break
+          out = [f'UUID={uuid}', f'BLOCK_SIZE={block}', f'COMPRESSION={compression}', f'FEATURES={features}', f'ZFEATURE_BITS={zfeatures}']
           Path('erofs_rebuild_hints.txt').write_text('\n'.join(out) + '\n')
           print('\n'.join(out))
           PY
@@ -179,40 +181,29 @@ jobs:
           if [[ "${UUID:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
             uuid_arg=(-U "$UUID")
           fi
-          # Android vendor EROFS commonly uses 4 KiB blocks with larger physical
-          # clusters. Try several compatible cluster sizes rather than forcing the
-          # block size itself, which can make the rebuilt image unnecessarily large.
-          if [ "${BLOCK_SIZE:-4096}" = "4096" ]; then
-            clusters=(65536 32768 16384 4096)
-          else
-            clusters=(65536 32768 16384 "$BLOCK_SIZE")
-          fi
-          candidates=(
-            'lz4hc,12'
-            'lz4hc,9'
-            'lz4'
-            'lzma,6'
-            'lzma,9'
-            ''
-          )
+          : > rebuild_attempts.txt
           best=''
           best_size=0
-          : > rebuild_attempts.txt
+          # Use large physical clusters first: this generally gives the compressor
+          # more room to match the compactness of the stock Android vendor image.
+          clusters=(1048576 524288 262144 131072 65536 32768 16384 4096)
+          compressors=('lz4hc,12' 'lz4hc,9' 'lz4,9' 'lz4' 'lzma,6' 'lzma,9' 'zstd,19' '')
           for cluster in "${clusters[@]}"; do
-            for comp in "${candidates[@]}"; do
+            for comp in "${compressors[@]}"; do
               label="${comp:-uncompressed}"
               safe="${label//,/-}-${cluster}"
               out="candidate-${safe}.img"
               echo "=== Trying compression=${label}, pcluster=${cluster} ===" | tee -a rebuild_attempts.txt
               rm -f "$out" "${out}.fsck"
-              args=(-b "$BLOCK_SIZE" "${uuid_arg[@]}")
-              if [ -n "$comp" ]; then
-                args+=(-z "$comp" -C "$cluster")
-              fi
-              if mkfs.erofs "${args[@]}" "$out" modified_vendor >> rebuild_attempts.txt 2>&1; then
+              args=(-b "${BLOCK_SIZE:-4096}")
+              if ((${#uuid_arg[@]})); then args+=("${uuid_arg[@]}"); fi
+              if [[ -n "$comp" ]]; then args+=(-z "$comp" -C "$cluster"); fi
+              # Preserve common EROFS metadata packing when supported. If a given
+              # combination rejects this extension, the attempt is simply logged.
+              if mkfs.erofs "${args[@]}" -Eztailpacking "$out" modified_vendor >> rebuild_attempts.txt 2>&1; then
                 size="$(stat -c '%s' "$out")"
                 echo "$out: $size bytes" | tee -a rebuild_attempts.txt
-                if [ "$size" -le "$orig_size" ] && fsck.erofs "$out" > "${out}.fsck" 2>&1; then
+                if [[ "$size" -le "$orig_size" ]] && fsck.erofs "$out" > "${out}.fsck" 2>&1; then
                   best="$out"
                   best_size="$size"
                   echo "VALID CANDIDATE: $out" | tee -a rebuild_attempts.txt
