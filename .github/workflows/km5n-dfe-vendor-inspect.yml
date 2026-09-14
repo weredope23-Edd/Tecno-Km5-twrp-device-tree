@@ -128,8 +128,7 @@ jobs:
                       parts = line.split()
                       if len(parts) >= 4:
                           opts = parts[3].split(',')
-                          if 'encryptable=/dev/block/by-name/metadata' not in opts:
-                              opts.append('encryptable=/dev/block/by-name/metadata')
+                          opts.append('encryptable=/dev/block/by-name/metadata')
                           parts[3] = ','.join(opts)
                           line = ' '.join(parts)
               lines.append(line)
@@ -155,7 +154,7 @@ jobs:
           import re
           from pathlib import Path
           s = Path('vendor_dump_summary.txt').read_text(errors='replace')
-          uuid = re.search(r'(?i)\bUUID\s*[:=]\s*([0-9a-f]{8}-[0-9a-f-]{27,})', s)
+          uuid = re.search(r'(?i)\bUUID\s*[:=]\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b', s)
           block = re.search(r'(?i)(?:block\s*size|blksz|blocksize)\s*[:=]\s*(\d+)', s)
           comps = []
           for x in ('lz4hc','lz4','lzma','zstd','deflate'):
@@ -177,34 +176,54 @@ jobs:
           source erofs_rebuild_hints.txt
           orig_size="$(stat -c '%s' stock/vendor_a.img)"
           uuid_arg=()
-          if [ -n "${UUID:-}" ]; then uuid_arg=(-U "$UUID"); fi
-          candidates=()
-          case "$COMPRESSION" in
-            lz4hc) candidates=(lz4hc,9 lz4hc,12 lz4) ;;
-            lz4) candidates=(lz4 lz4hc,9 lz4hc,12) ;;
-            lzma) candidates=(lzma,6 lzma,9) ;;
-            zstd) candidates=(zstd) ;;
-            deflate) candidates=(deflate) ;;
-            *) candidates=(lz4hc,9 lz4hc,12 lz4) ;;
-          esac
+          if [[ "${UUID:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            uuid_arg=(-U "$UUID")
+          fi
+          # Android vendor EROFS commonly uses 4 KiB blocks with larger physical
+          # clusters. Try several compatible cluster sizes rather than forcing the
+          # block size itself, which can make the rebuilt image unnecessarily large.
+          if [ "${BLOCK_SIZE:-4096}" = "4096" ]; then
+            clusters=(65536 32768 16384 4096)
+          else
+            clusters=(65536 32768 16384 "$BLOCK_SIZE")
+          fi
+          candidates=(
+            'lz4hc,12'
+            'lz4hc,9'
+            'lz4'
+            'lzma,6'
+            'lzma,9'
+            ''
+          )
           best=''
           best_size=0
-          for comp in "${candidates[@]}"; do
-            out="candidate-${comp//,/-}.img"
-            echo "=== Trying compression $comp ==="
-            rm -f "$out"
-            if ! mkfs.erofs -b "$BLOCK_SIZE" "${uuid_arg[@]}" -z "$comp" -C "$BLOCK_SIZE" "$out" modified_vendor; then
-              echo "mkfs.erofs failed for $comp"
-              continue
-            fi
-            size="$(stat -c '%s' "$out")"
-            echo "$out: $size bytes"
-            if [ "$size" -le "$orig_size" ] && fsck.erofs "$out" > "${out}.fsck" 2>&1; then
-              best="$out"
-              best_size="$size"
-              break
-            fi
-            rm -f "$out" "${out}.fsck"
+          : > rebuild_attempts.txt
+          for cluster in "${clusters[@]}"; do
+            for comp in "${candidates[@]}"; do
+              label="${comp:-uncompressed}"
+              safe="${label//,/-}-${cluster}"
+              out="candidate-${safe}.img"
+              echo "=== Trying compression=${label}, pcluster=${cluster} ===" | tee -a rebuild_attempts.txt
+              rm -f "$out" "${out}.fsck"
+              args=(-b "$BLOCK_SIZE" "${uuid_arg[@]}")
+              if [ -n "$comp" ]; then
+                args+=(-z "$comp" -C "$cluster")
+              fi
+              if mkfs.erofs "${args[@]}" "$out" modified_vendor >> rebuild_attempts.txt 2>&1; then
+                size="$(stat -c '%s' "$out")"
+                echo "$out: $size bytes" | tee -a rebuild_attempts.txt
+                if [ "$size" -le "$orig_size" ] && fsck.erofs "$out" > "${out}.fsck" 2>&1; then
+                  best="$out"
+                  best_size="$size"
+                  echo "VALID CANDIDATE: $out" | tee -a rebuild_attempts.txt
+                  break 2
+                fi
+                echo "Rejected: too large or fsck failed" | tee -a rebuild_attempts.txt
+              else
+                echo "mkfs.erofs failed for $label at pcluster $cluster" | tee -a rebuild_attempts.txt
+              fi
+              rm -f "$out" "${out}.fsck"
+            done
           done
           test -n "$best"
           cp "$best" vendor_a_dfe_candidate.img
@@ -237,6 +256,7 @@ jobs:
             stock_data_fstab_line.txt
             fstab_dfe.patch
             erofs_rebuild_hints.txt
+            rebuild_attempts.txt
             candidate_size.txt
             vendor_a_dfe_candidate.img
             vendor_a_dfe_candidate.sha256
