@@ -48,7 +48,7 @@ jobs:
           git clone --depth 1 --branch v5.4.6 https://github.com/tukaani-project/xz.git /tmp/xz
           cd /tmp/xz
           ./autogen.sh --no-po4a
-          ./configure --prefix=/usr/local
+          ./configure --prefix=/usr/local --disable-doxygen
           make -j"$(nproc)"
           sudo make install
           sudo ldconfig
