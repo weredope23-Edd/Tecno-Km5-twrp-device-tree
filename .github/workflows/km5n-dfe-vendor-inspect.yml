@@ -46,16 +46,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo '--- EROFS superblock ---'
           dump.erofs -s stock/vendor_a.img | tee vendor_dump_summary.txt
+          echo '--- EROFS statistics ---'
           dump.erofs -S stock/vendor_a.img | tee vendor_dump_superblock.txt
-          fsck.erofs -v stock/vendor_a.img | tee vendor_fsck.txt
+          echo '--- EROFS integrity check ---'
+          fsck.erofs -p stock/vendor_a.img | tee vendor_fsck.txt
 
       - name: Extract vendor filesystem
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p extracted_vendor
-          fsck.erofs --extract=extracted_vendor stock/vendor_a.img
+          fsck.erofs --extract extracted_vendor stock/vendor_a.img
           test -f extracted_vendor/etc/fstab.mt6768
           cp extracted_vendor/etc/fstab.mt6768 stock_fstab.mt6768
           echo '--- stock vendor/etc/fstab.mt6768 ---'
