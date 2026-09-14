@@ -32,7 +32,7 @@ jobs:
           test "$(sha256sum stock/vendor_a.img | awk '{print $1}')" = "b2d47a2d341f651ec4ad175273f07d987f2c068b94d46878bba589642793ef38"
           stat -c 'vendor_a.img: %s bytes' stock/vendor_a.img
 
-      - name: Build current EROFS tools
+      - name: Install EROFS build dependencies
         shell: bash
         run: |
           set -euo pipefail
@@ -40,6 +40,28 @@ jobs:
           sudo apt-get install -y \
             autoconf automake libtool pkg-config uuid-dev zlib1g-dev \
             liblz4-dev liblzma-dev libzstd-dev libfuse-dev git build-essential
+
+      - name: Build a modern liblzma for EROFS MicroLZMA support
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v5.4.6 https://github.com/tukaani-project/xz.git /tmp/xz
+          cd /tmp/xz
+          ./autogen.sh
+          ./configure --prefix=/usr/local
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
+          pkg-config --modversion liblzma
+          ldconfig -p | grep 'liblzma.so' | head
+
+      - name: Build EROFS v1.9.1 with LZ4, ZSTD and MicroLZMA support
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:${PKG_CONFIG_PATH:-}"
+          export CPPFLAGS="-I/usr/local/include ${CPPFLAGS:-}"
+          export LDFLAGS="-L/usr/local/lib -Wl,-rpath,/usr/local/lib ${LDFLAGS:-}"
           git clone --depth 1 --branch v1.9.1 https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git /tmp/erofs-utils
           cd /tmp/erofs-utils
           ./autogen.sh
