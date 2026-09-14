@@ -1,3 +1,4 @@
+# Trigger fresh KM5n DFE candidate after AVB-finalizer verification fix.
 name: KM5n Vendor DFE Inspector
 
 on:
