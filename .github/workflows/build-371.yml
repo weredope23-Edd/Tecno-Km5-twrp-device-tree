@@ -41,10 +41,10 @@ jobs:
           temp-reserve-mb: 128
           swap-size-mb: 1024
           remove-dotnet: 'false'
-          remove-android: 'false'
-          remove-haskell: 'false'
-          remove-codeql: 'false'
-          remove-docker-images: 'false'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
 
       - name: Show runner disk space
         run: |
@@ -120,11 +120,14 @@ jobs:
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
           mkdir -p "$TWRP_DIR/device/tecno/km5n"
+
+          # Copy only the device tree. The previous implementation rsynced
+          # the entire workspace into itself, which recursively copied the
+          # freshly synced twrp371/.repo into the device tree and exhausted
+          # the build volume.
           rsync -a \
             --exclude='.git' \
-            --exclude='.github' \
-            --exclude='twrp/' \
-            "$GITHUB_WORKSPACE/" \
+            "$GITHUB_WORKSPACE/device/tecno/km5n/" \
             "$TWRP_DIR/device/tecno/km5n/"
 
           # Use the TWRP-3.7.1-specific configuration instead of the
