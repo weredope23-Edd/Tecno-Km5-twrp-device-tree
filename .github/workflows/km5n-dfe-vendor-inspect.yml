@@ -38,7 +38,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y \
-            autoconf automake libtool pkg-config uuid-dev zlib1g-dev \
+            autoconf automake autopoint libtool pkg-config uuid-dev zlib1g-dev \
             liblz4-dev liblzma-dev libzstd-dev libfuse-dev git build-essential
 
       - name: Build a modern liblzma for EROFS MicroLZMA support
