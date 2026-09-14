@@ -64,7 +64,17 @@ jobs:
       - name: Install Android 15 AVB tooling
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake build-essential libtool
           git clone --depth 1 --branch android-15.0.0_r35 https://android.googlesource.com/platform/external/avb /tmp/avb
+          git clone --depth 1 https://android.googlesource.com/platform/external/fec /tmp/fec
+          cd /tmp/fec
+          ./configure --prefix=/usr/local
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
+          command -v fec
+          fec --print-fec-size 4096 --roots 2
           python3 /tmp/avb/avbtool.py version | tee avbtool_version.txt
 
       - name: Capture stock AVB parameters
@@ -215,4 +225,3 @@ jobs:
             avb_params.env
             avbtool_version.txt
             avbtool_add_hashtree_footer.log
-            source_artifact.txt
