@@ -31,12 +31,24 @@ jobs:
         env:
           MANUAL_RUN_ID: ${{ inputs.source_run_id }}
           EVENT_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          run_id="${MANUAL_RUN_ID:-$EVENT_RUN_ID}"
+          if [[ -n "$MANUAL_RUN_ID" ]]; then
+            run_id="$MANUAL_RUN_ID"
+            echo "Using manually supplied source run $run_id"
+          else
+            # workflow_run event payloads can reference an upstream run whose
+            # artifact has already become unavailable. Resolve the newest
+            # successful KM5n Vendor DFE Inspector run instead of trusting a
+            # stale event id.
+            workflow_id="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPOSITORY/actions/workflows?per_page=100" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(w["id"] for w in d["workflows"] if w["name"]=="KM5n Vendor DFE Inspector"))')"
+            run_id="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPOSITORY/actions/workflows/$workflow_id/runs?branch=main&status=success&per_page=20" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["workflow_runs"][0]["id"])')"
+            echo "Resolved latest successful inspector run $run_id (event was $EVENT_RUN_ID)"
+          fi
           test -n "$run_id"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "Using source run $run_id"
 
       - name: Download candidate artifact from source run
         uses: actions/download-artifact@v4
