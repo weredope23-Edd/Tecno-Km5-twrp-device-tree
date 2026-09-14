@@ -1,19 +1,19 @@
-name: Build TWRP KM5n (TWRP 16.0)
+name: Build TWRP KM5n (TWRP 14.1)
 
 on:
+  push:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 180
     steps:
       - name: Cleanup runner
         uses: rokibhasansagar/slimhub_actions@main
 
-      # Install everything before maximize-build-space remounts the workspace.
-      # The remount intentionally consumes most of the root filesystem for the
-      # build volume, leaving too little space for apt's package cache.
       - name: Checkout device tree
         uses: actions/checkout@v4
         with:
@@ -23,21 +23,15 @@ jobs:
         run: |
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
-          for attempt in 1 2 3; do
-            sudo apt-get update && break
-            echo "apt update failed; retry ${attempt}/3"
-            sleep 5
-          done
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             openjdk-17-jdk-headless \
             git-core gnupg flex bison build-essential zip curl \
             zlib1g-dev libc6-dev-i386 lib32ncurses6 lib32z1 \
-            libssl-dev bc rsync libelf-dev
+            libssl-dev bc rsync libelf-dev python3
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
-          echo '=== Java ==='
           java -version
-          echo '=== Disk after dependencies ==='
           df -h /
 
       - name: Maximize build space
@@ -52,13 +46,6 @@ jobs:
           remove-codeql: 'false'
           remove-docker-images: 'false'
 
-      - name: Show runner disk space
-        run: |
-          set -eux
-          df -h /
-          df -h /mnt || true
-          df -h "$GITHUB_WORKSPACE"
-
       - name: Install repo
         run: |
           set -euxo pipefail
@@ -67,23 +54,23 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Sync TWRP source
+      - name: Sync TWRP 14.1 source
         run: |
-          set -uo pipefail
+          set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
           mkdir -p "$TWRP_DIR"
           cd "$TWRP_DIR"
 
           repo init \
             -u https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git \
-            -b twrp-16.0 \
+            -b twrp-14.1 \
             --depth=1 \
             --partial-clone \
             --clone-filter=blob:none
 
           mkdir -p .repo/local_manifests
           curl -fsSL \
-            https://raw.githubusercontent.com/TWRP-Test/platform_manifest_twrp_aosp/twrp-16.0/remove-minimal.xml \
+            https://raw.githubusercontent.com/TWRP-Test/platform_manifest_twrp_aosp/twrp-14.1/remove-minimal.xml \
             -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
 
@@ -96,14 +83,6 @@ jobs:
           p.write_text(s)
           PY
 
-          echo '=== Manifest initialized ==='
-          test -f .repo/manifest.xml
-          wc -l .repo/manifest.xml
-          wc -l .repo/local_manifests/remove-minimal.xml
-          echo '=== Disk before repo sync ==='
-          df -h "$GITHUB_WORKSPACE"
-
-          set -x
           repo sync \
             -c \
             -j1 \
@@ -114,15 +93,6 @@ jobs:
             --retry-fetches=5 \
             --prune \
             --fail-fast 2>&1 | tee repo-sync.log
-          sync_rc=${PIPESTATUS[0]}
-          set +x
-
-          echo "repo sync exit code: ${sync_rc}"
-          echo '=== Disk after repo sync ==='
-          df -h "$GITHUB_WORKSPACE"
-          du -sh .repo 2>/dev/null || true
-          du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
-          exit "$sync_rc"
 
       - name: Add KM5n device tree
         run: |
@@ -136,7 +106,20 @@ jobs:
             "$GITHUB_WORKSPACE/" \
             "$TWRP_DIR/device/tecno/km5n/"
 
-      - name: Build TWRP vendor_boot
+      - name: Verify TWRP 14 target
+        run: |
+          set -euxo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
+          cd "$TWRP_DIR"
+          if grep -R -n 'twrp-16\\.0' device/tecno/km5n .repo/local_manifests; then
+            echo 'ERROR: TWRP 16.0 reference found in TWRP 14.1 build inputs.'
+            exit 1
+          fi
+          grep -q 'PRODUCT_NAME := twrp_km5n' device/tecno/km5n/twrp_km5n.mk
+          grep -q 'TARGET_BOARD_PLATFORM := mt6768' device/tecno/km5n/BoardConfig.mk
+          grep -q 'BOARD_BOOT_HEADER_VERSION := 4' device/tecno/km5n/BoardConfig.mk
+
+      - name: Build TWRP 14.1 vendor_boot
         run: |
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp"
@@ -145,14 +128,9 @@ jobs:
           export LC_ALL=C
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
-
-          echo '=== Disk before build ==='
-          df -h "$GITHUB_WORKSPACE"
-
           source build/envsetup.sh
           lunch twrp_km5n-eng
           mka vendorbootimage -j2
-
           test -s out/target/product/km5n/vendor_boot.img
           stat -c '%n %s bytes' out/target/product/km5n/vendor_boot.img
           bash device/tecno/km5n/scripts/validate_vendor_boot.sh out/target/product/km5n/vendor_boot.img
@@ -170,17 +148,13 @@ jobs:
           cp -f .repo/local_manifests/remove-minimal.xml build-debug/ 2>/dev/null || true
           cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
           cp -f out/verbose.log.gz build-debug/ 2>/dev/null || true
-          find out/target/product/km5n -maxdepth 2 -type f \
-            \( -name 'build.prop' -o -name '*recovery*.log' -o -name '*.mk' \) \
-            -print > build-debug/output-files.txt 2>/dev/null || true
           df -h "$GITHUB_WORKSPACE" > build-debug/disk.txt 2>&1 || true
-          du -sh "$TWRP_DIR"/* 2>/dev/null | sort -h > build-debug/top-level-disk.txt || true
 
       - name: Upload build output
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: twrp-km5n-build-output
+          name: twrp-km5n-twrp14-build-output
           path: |
             ${{ github.workspace }}/twrp/out/target/product/km5n/vendor_boot.img
             ${{ github.workspace }}/twrp/build-debug/**
