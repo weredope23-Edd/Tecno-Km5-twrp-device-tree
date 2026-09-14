@@ -59,8 +59,8 @@ jobs:
           dump.erofs -s stock/vendor_a.img | tee vendor_dump_summary.txt
           echo '--- EROFS statistics ---'
           dump.erofs -S stock/vendor_a.img | tee vendor_dump_superblock.txt
-          echo '--- EROFS integrity check and full extraction validation ---'
-          fsck.erofs --extract stock/vendor_a.img | tee vendor_fsck.txt
+          echo '--- EROFS integrity check ---'
+          fsck.erofs stock/vendor_a.img | tee vendor_fsck.txt
 
       - name: Extract vendor filesystem
         shell: bash
