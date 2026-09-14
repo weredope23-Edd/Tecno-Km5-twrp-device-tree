@@ -10,12 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - name: Cleanup runner
-        uses: rokibhasansagar/slimhub_actions@main
-        continue-on-error: true
-
-      # The build-space action must run BEFORE checkout. Mounting it after
-      # checkout hides the checked-out repository and leaves the root fs full.
+      # Avoid the third-party runner cleaner: on current Ubuntu images it can
+      # spend many minutes purging packages we do not need. The build-space
+      # action plus the small manual cleanup below are sufficient.
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         continue-on-error: true
@@ -27,7 +24,9 @@ jobs:
           remove-android: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
-          remove-docker-images: 'true'
+          # The hosted image may not contain docker after cleanup. Do not ask
+          # the action to invoke docker; it is not needed for this build.
+          remove-docker-images: 'false'
 
       - name: Manual disk cleanup fallback
         run: |
@@ -113,9 +112,11 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
 
           set -x
+          # Four concurrent projects is a better compromise for the hosted
+          # runner: the previous -j1 sync took ~41 minutes.
           repo sync \
             -c \
-            -j1 \
+            -j4 \
             --force-sync \
             --no-clone-bundle \
             --no-tags \
@@ -170,13 +171,16 @@ jobs:
             "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
           echo '=== Android 14 lunch choices ==='
           cat "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk"
+          echo '=== Device release config ==='
+          cat "$TWRP_DIR/device/tecno/km5n/release/release_config_map.mk"
+          cat "$TWRP_DIR/device/tecno/km5n/release/ap2a.mk"
 
       - name: Reclaim repo metadata before build
         run: |
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
           # repo metadata is required for sync only, not for the actual build.
-          # Keeping it can consume most of the 72G hosted runner filesystem.
+          # Keeping it can consume most of the hosted runner filesystem.
           du -sh "$TWRP_DIR/.repo" 2>/dev/null || true
           rm -rf "$TWRP_DIR/.repo"
           df -h "$GITHUB_WORKSPACE"
@@ -197,10 +201,21 @@ jobs:
           echo '=== Disk before build ==='
           df -h "$GITHUB_WORKSPACE"
 
+          echo '=== Release config files visible to Android build ==='
+          find device/tecno/km5n/release -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \;
+          echo '=== Release config maps in source ==='
+          find device vendor build/release -name 'release_config_map.mk' -o -name 'release_config_map.textproto' 2>/dev/null | sort | head -100
+
           source build/envsetup.sh
           lunch twrp_km5n-ap2a-eng
 
           set -u
+          echo '=== Selected build variables ==='
+          get_build_var TARGET_PRODUCT
+          get_build_var TARGET_RELEASE
+          get_build_var TARGET_BUILD_VARIANT
+          get_build_var PRODUCT_RELEASE_CONFIG_MAPS
+
           mka vendorbootimage -j2
 
           test -s out/target/product/km5n/vendor_boot.img
@@ -220,6 +235,8 @@ jobs:
           cp -f .repo/local_manifests/remove-minimal.xml build-debug/ 2>/dev/null || true
           cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
           cp -f out/verbose.log.gz build-debug/ 2>/dev/null || true
+          cp -f out/soong/release-config.out build-debug/ 2>/dev/null || true
+          find out/soong/release-config -maxdepth 2 -type f -print -exec sh -c 'echo "--- $1"; sed -n "1,160p" "$1"' _ {} \; > build-debug/release-config.txt 2>/dev/null || true
           df -h "$GITHUB_WORKSPACE" > build-debug/disk.txt 2>&1 || true
           du -sh "$TWRP_DIR"/* 2>/dev/null | sort -h > build-debug/top-level-disk.txt || true
 
