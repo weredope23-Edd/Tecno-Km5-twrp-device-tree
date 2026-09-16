@@ -135,6 +135,18 @@ jobs:
           du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
           exit "$sync_rc"
 
+      # The synced source tree plus .repo consumes essentially the entire
+      # ~61G build volume. Reclaim the ~14G repo metadata before copying the
+      # OEM recovery/device tree so the copy cannot push the volume over 100%.
+      - name: Reclaim repo metadata before adding device tree
+        run: |
+          set -euxo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          du -sh "$TWRP_DIR/.repo" 2>/dev/null || true
+          rm -rf "$TWRP_DIR/.repo"
+          df -h "$GITHUB_WORKSPACE"
+          du -sh "$TWRP_DIR" 2>/dev/null || true
+
       - name: Add KM5n device tree
         run: |
           set -euxo pipefail
@@ -175,15 +187,6 @@ jobs:
           echo '=== Device release config ==='
           cat "$TWRP_DIR/device/tecno/km5n/release/release_config_map.mk"
           cat "$TWRP_DIR/device/tecno/km5n/release/ap2a.mk"
-
-      - name: Reclaim repo metadata before build
-        run: |
-          set -euxo pipefail
-          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
-          du -sh "$TWRP_DIR/.repo" 2>/dev/null || true
-          rm -rf "$TWRP_DIR/.repo"
-          df -h "$GITHUB_WORKSPACE"
-          du -sh "$TWRP_DIR" 2>/dev/null || true
 
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
