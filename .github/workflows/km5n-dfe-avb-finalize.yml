@@ -37,6 +37,8 @@ jobs:
           set -euo pipefail
           if [[ -n "$MANUAL_RUN_ID" ]]; then
             run_id="$MANUAL_RUN_ID"
+          elif [[ -n "$EVENT_RUN_ID" ]]; then
+            run_id="$EVENT_RUN_ID"
           else
             workflow_id="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPOSITORY/actions/workflows?per_page=100" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(next(w["id"] for w in d["workflows"] if w["name"]=="KM5n Vendor DFE Inspector"))')"
             run_id="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPOSITORY/actions/workflows/$workflow_id/runs?branch=main&status=success&per_page=20" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["workflow_runs"][0]["id"])')"
@@ -71,9 +73,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev
           git clone --depth 1 --branch android-15.0.0_r35 https://android.googlesource.com/platform/external/avb /tmp/avb
-          # external/fec uses annotated Android release tags. Checkout the
-          # platform-15.0.0_r17 tag explicitly so git does not treat the tag
-          # object itself as a commit and abort the clone with exit 1.
           git clone --depth 1 https://android.googlesource.com/platform/external/fec /tmp/fec
           git -C /tmp/fec fetch --depth 1 origin refs/tags/android-platform-15.0.0_r17
           git -C /tmp/fec checkout --detach FETCH_HEAD
@@ -142,17 +141,7 @@ jobs:
             m=re.search(p,s,re.M)
             if not m: raise SystemExit('missing AVB field: '+n)
             return m.group(1)
-          vals={
-            'salt':one(r'^\s*Salt:\s+([0-9a-fA-F]+)$','Salt'),
-            'hash_algorithm':one(r'^\s*Hash Algorithm:\s+(\S+)$','Hash Algorithm'),
-            'partition_name':one(r'^\s*Partition Name:\s+(\S+)$','Partition Name'),
-            'fec_roots':one(r'^\s*FEC num roots:\s+(\d+)$','FEC num roots'),
-            'algorithm':one(r'^\s*Algorithm:\s+(\S+)$','Algorithm'),
-            'rollback_index':one(r'^\s*Rollback Index:\s+(\d+)$','Rollback Index'),
-            'rollback_index_location':one(r'^\s*Rollback Index Location:\s+(\d+)$','Rollback Index Location'),
-            'flags':one(r'^\s*Flags:\s+(\d+)$','Flags'),
-            'release':one(r"^\s*Release String:\s+'(.*)'$",'Release String'),
-            'image_size':one(r'^\s*Original image size:\s+(\d+) bytes$','Original image size')}
+          vals={'salt':one(r'^\s*Salt:\s+([0-9a-fA-F]+)$','Salt'),'hash_algorithm':one(r'^\s*Hash Algorithm:\s+(\S+)$','Hash Algorithm'),'partition_name':one(r'^\s*Partition Name:\s+(\S+)$','Partition Name'),'fec_roots':one(r'^\s*FEC num roots:\s+(\d+)$','FEC num roots'),'algorithm':one(r'^\s*Algorithm:\s+(\S+)$','Algorithm'),'rollback_index':one(r'^\s*Rollback Index:\s+(\d+)$','Rollback Index'),'rollback_index_location':one(r'^\s*Rollback Index Location:\s+(\d+)$','Rollback Index Location'),'flags':one(r'^\s*Flags:\s+(\d+)$','Flags'),'release':one(r"^\s*Release String:\s+'(.*)'$",'Release String'),'image_size':one(r'^\s*Original image size:\s+(\d+) bytes$','Original image size')}
           props=re.findall(r"^\s*Prop: ([^ ]+) -> '(.*)'$",s,re.M); got=dict(props)
           expected={'com.android.build.vendor.os_version':'15','com.android.build.vendor.security_patch':'2026-05-01','com.android.build.vendor.fingerprint':'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A.240905.015.A2/260422V952:user/release-keys'}
           for k,v in expected.items():
@@ -196,16 +185,7 @@ jobs:
           import re
           from pathlib import Path
           s=Path('vendor_a_dfe_avb.txt').read_text()
-          checks=[
-            (r'^\s*Footer version:\s+1\.0$','footer'),
-            (r'^\s*Original image size:\s+512012288 bytes$','original image size'),
-            (r'^\s*Algorithm:\s+NONE$','algorithm'),
-            (r'^\s*FEC num roots:\s+2$','FEC roots'),
-            (r'^\s*Hash Algorithm:\s+sha256$','hash algorithm'),
-            (r'^\s*Partition Name:\s+vendor$','partition'),
-            (r"^\s*Prop: com\.android\.build\.vendor\.os_version -> '15'$",'OS version'),
-            (r"^\s*Prop: com\.android\.build\.vendor\.security_patch -> '2026-05-01'$",'security patch'),
-            (r"^\s*Prop: com\.android\.build\.vendor\.fingerprint -> 'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A\.240905\.015\.A2/260422V952:user/release-keys'$",'fingerprint')]
+          checks=[(r'^\s*Footer version:\s+1\.0$','footer'),(r'^\s*Original image size:\s+512012288 bytes$','original image size'),(r'^\s*Algorithm:\s+NONE$','algorithm'),(r'^\s*FEC num roots:\s+2$','FEC roots'),(r'^\s*Hash Algorithm:\s+sha256$','hash algorithm'),(r'^\s*Partition Name:\s+vendor$','partition'),(r"^\s*Prop: com\.android\.build\.vendor\.os_version -> '15'$",'OS version'),(r"^\s*Prop: com\.android\.build\.vendor\.security_patch -> '2026-05-01'$",'security patch'),(r"^\s*Prop: com\.android\.build\.vendor\.fingerprint -> 'TECNO/KM5n-OP/TECNO-KM5n:15/AP3A\.240905\.015\.A2/260422V952:user/release-keys'$",'fingerprint')]
           for p,n in checks:
             if not re.search(p,s,re.M): raise SystemExit('final AVB validation failed: '+n)
           PY
@@ -220,5 +200,6 @@ jobs:
             vendor_a_dfe.img
             vendor_a_dfe.sha256
             vendor_a_dfe_avb.txt
-            vendor_a_avb.txt
             avbtool_add_hashtree_footer.log
+          if-no-files-found: error
+          retention-days: 90
