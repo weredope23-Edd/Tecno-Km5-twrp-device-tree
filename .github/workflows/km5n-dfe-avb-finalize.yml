@@ -58,8 +58,14 @@ jobs:
             else
               echo "No explicit inspector run supplied; searching successful main runs."
             fi
-            run_id="$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPOSITORY/actions/workflows/$workflow_id/runs?branch=main&status=success&per_page=50" |
-              python3 -c 'import json,sys,subprocess; d=json.load(sys.stdin); runs=d.get("workflow_runs",[]); print(next((str(r["id"]) for r in runs if subprocess.run(["true"],check=False).returncode==0 and __import__("os").popen("curl -fsSL -H \'Authorization: Bearer $GH_TOKEN\' -H \'Accept: application/vnd.github+json\' https://api.github.com/repos/$REPOSITORY/actions/runs/%s/artifacts?per_page=100"%r["id"]).read() and any(a.get("name")=="km5n-vendor-dfe-candidate" and not a.get("expired",False) for a in __import__("json").loads(__import__("os").popen("curl -fsSL -H \'Authorization: Bearer $GH_TOKEN\' -H \'Accept: application/vnd.github+json\' https://api.github.com/repos/$REPOSITORY/actions/runs/%s/artifacts?per_page=100"%r["id"]).read()).get("artifacts",[]))), "") )')"
+            while IFS= read -r candidate_run; do
+              [[ -n "$candidate_run" ]] || continue
+              if [[ "$(has_candidate "$candidate_run")" == "yes" ]]; then
+                run_id="$candidate_run"
+                echo "Fallback inspector run $run_id has a usable candidate artifact."
+                break
+              fi
+            done < <(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPOSITORY/actions/workflows/$workflow_id/runs?branch=main&status=success&per_page=50" | python3 -c 'import json,sys; print("\n".join(str(r["id"]) for r in json.load(sys.stdin).get("workflow_runs",[])))')
           fi
           test -n "$run_id"
           echo "Resolved inspector run: $run_id (event was $EVENT_RUN_ID)"
