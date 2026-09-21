@@ -1,8 +1,6 @@
 name: Build TWRP KM5n (3.7.1 / Android 14)
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 jobs:
