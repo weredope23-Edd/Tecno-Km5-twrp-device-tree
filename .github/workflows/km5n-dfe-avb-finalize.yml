@@ -120,7 +120,7 @@ jobs:
           #define RSM 255ULL
           #define MAGIC 0xFECFECFEU
           #define VERSION 0U
-          struct fec_header_disk { uint32_t magic,version,size,roots,fec_size; uint64_t inp_size; uint8_t hash[32]; };
+          struct __attribute__((packed)) fec_header_disk { uint32_t magic,version,size,roots,fec_size; uint64_t inp_size; uint8_t hash[32]; };
           static uint64_t div_up(uint64_t x,uint64_t y){return x/y+(x%y!=0);}
           static uint64_t fec_size(uint64_t n,unsigned roots){uint64_t blocks=div_up(n,BLOCK),rounds=div_up(blocks,RSM-roots);return rounds*roots*BLOCK;}
           static int print_size(uint64_t n,unsigned roots){printf("%llu\n",(unsigned long long)(fec_size(n,roots)+BLOCK));return 0;}
