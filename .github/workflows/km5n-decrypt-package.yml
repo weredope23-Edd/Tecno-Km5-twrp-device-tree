@@ -1,0 +1,215 @@
+name: KM5n DFE decrypt.zip packager
+
+on:
+  push:
+    paths:
+      - .github/workflows/km5n-decrypt-package.yml
+  workflow_dispatch:
+
+concurrency:
+  group: km5n-dfe-sequential
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  package:
+    name: Package validated KM5n DFE vendor image
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Download validated AVB artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/km5n-avb
+          gh run download 35669141904 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name km5n-vendor-dfe-avb-valid \
+            --dir /tmp/km5n-avb
+          test -s /tmp/km5n-avb/vendor_a_dfe.img
+          stat -c '%n %s bytes' /tmp/km5n-avb/vendor_a_dfe.img
+
+      - name: Verify validated image before packaging
+        run: |
+          set -euo pipefail
+          expected_size=521871360
+          expected_sha=0322f293ed3b43d87a55bf2bca7f6b903176f7de0182303ca2175746186f9cf1
+          test "$(stat -c '%s' /tmp/km5n-avb/vendor_a_dfe.img)" -eq "$expected_size"
+          actual_sha="$(sha256sum /tmp/km5n-avb/vendor_a_dfe.img | awk '{print $1}')"
+          test "$actual_sha" = "$expected_sha"
+
+      - name: Build TWRP-compatible slot-aware update-binary
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/decrypt
+          mkdir -p /tmp/decrypt/META-INF/com/google/android
+
+          cat > /tmp/decrypt/META-INF/com/google/android/update-binary <<'SH'
+          #!/sbin/sh
+          set -eu
+
+          OUTFD="$2"
+          ZIPFILE="$3"
+          IMAGE="vendor_a_dfe.img"
+          EXPECTED_SIZE=521871360
+          EXPECTED_SHA="0322f293ed3b43d87a55bf2bca7f6b903176f7de0182303ca2175746186f9cf1"
+
+          ui_print() {
+            echo "ui_print $*" > /proc/self/fd/$OUTFD
+            echo "ui_print" > /proc/self/fd/$OUTFD
+          }
+
+          abort() {
+            ui_print "ERROR: $*"
+            exit 1
+          }
+
+          find_slot() {
+            s="$(getprop ro.boot.slot_suffix 2>/dev/null || true)"
+            [ -n "$s" ] && { echo "$s"; return; }
+            s="$(grep -o 'androidboot.slot_suffix=[^ ]*' /proc/cmdline 2>/dev/null | cut -d= -f2 || true)"
+            [ -n "$s" ] && { echo "$s"; return; }
+            s="$(getprop ro.boot.slot 2>/dev/null || true)"
+            [ -n "$s" ] && { echo "_$s"; return; }
+          }
+
+          extract_image() {
+            if command -v unzip >/dev/null 2>&1; then
+              unzip -p "$ZIPFILE" "$IMAGE"
+            elif command -v busybox >/dev/null 2>&1; then
+              busybox unzip -p "$ZIPFILE" "$IMAGE"
+            else
+              return 1
+            fi
+          }
+
+          slot="$(find_slot || true)"
+          slot_display="$slot"
+          [ -n "$slot_display" ] || slot_display="unslotted"
+
+          case "$slot" in
+            _a|_b)
+              TARGET="/dev/block/by-name/vendor$slot"
+              [ -e "$TARGET" ] || TARGET="/dev/block/bootdevice/by-name/vendor$slot"
+              [ -e "$TARGET" ] || TARGET="/dev/block/mapper/vendor$slot"
+              ;;
+            "")
+              TARGET="/dev/block/by-name/vendor"
+              [ -e "$TARGET" ] || abort "Could not determine A/B slot or vendor block device"
+              ;;
+            *)
+              abort "Unsupported slot suffix: $slot"
+              ;;
+          esac
+
+          [ -e "$TARGET" ] || abort "Vendor block device not found: $TARGET"
+
+          ui_print "KM5n DFE vendor patch"
+          ui_print "Detected slot: $slot_display"
+          ui_print "Target: $TARGET"
+
+          TARGET_SIZE="$(blockdev --getsize64 "$TARGET" 2>/dev/null || echo 0)"
+          [ "$TARGET_SIZE" -ge "$EXPECTED_SIZE" ] || abort "Vendor target is too small: $TARGET_SIZE"
+
+          ui_print "Writing AVB-valid vendor image..."
+          extract_image | dd of="$TARGET" bs=4M conv=fsync
+          sync
+
+          ui_print "Verifying flashed image..."
+          ACTUAL_SHA="$(dd if="$TARGET" bs=4096 count=127410 2>/dev/null | sha256sum | awk '{print $1}')"
+          [ "$ACTUAL_SHA" = "$EXPECTED_SHA" ] || abort "Readback SHA-256 mismatch"
+
+          ui_print "Vendor DFE image flashed successfully."
+          ui_print "Format Data only if Android still cannot decrypt it."
+          exit 0
+          SH
+
+          chmod 0755 /tmp/decrypt/META-INF/com/google/android/update-binary
+
+      - name: Add package metadata
+        run: |
+          set -euo pipefail
+          cat > /tmp/decrypt/META-INF/com/google/android/updater-script <<'EOF'
+          # KM5n DFE package: custom update-binary performs the slot-aware vendor flash.
+          EOF
+
+          cp /tmp/km5n-avb/vendor_a_dfe.sha256 /tmp/decrypt/vendor_a_dfe.sha256
+          cp /tmp/km5n-avb/vendor_a_dfe_avb.txt /tmp/decrypt/vendor_a_dfe_avb.txt
+          cp /tmp/km5n-avb/vendor_a_dfe.img /tmp/decrypt/vendor_a_dfe.img
+
+          cat > /tmp/decrypt/README.txt <<'EOF'
+          KM5n DFE decrypt.zip
+
+          Device target: Tecno KM5n (MT6768)
+          Payload: complete AVB-valid vendor image containing the KM5n-specific DFE/fstab modification.
+
+          This is a flashable patch package; the payload is a complete vendor partition image,
+          not a binary-diff patch.
+
+          The included update-binary:
+            - detects the active A/B slot,
+            - targets vendor_a or vendor_b,
+            - checks target capacity,
+            - writes the validated vendor image,
+            - verifies the SHA-256 by reading the flashed image back.
+
+          Validated image:
+            size: 521871360 bytes
+            sha256: 0322f293ed3b43d87a55bf2bca7f6b903176f7de0182303ca2175746186f9cf1
+
+          AVB:
+            hashtree: present
+            FEC: present
+            footer: present
+            algorithm: NONE (matching stock vendor AVB parameters)
+            vendor OS: 15
+            security patch: 2026-05-01
+
+          Before flashing:
+            - Keep the bootloader unlocked.
+            - Boot a working TWRP recovery.
+            - Back up the original vendor partition.
+            - Do not flash this package to vendor_boot.
+
+          After flashing:
+            - Reboot recovery once.
+            - Format/wipe Data only if Android still cannot decrypt it.
+          EOF
+
+      - name: Build decrypt.zip
+        run: |
+          set -euo pipefail
+          cd /tmp/decrypt
+          zip -0 -r -q /tmp/decrypt.zip \
+            META-INF \
+            vendor_a_dfe.img \
+            vendor_a_dfe.sha256 \
+            vendor_a_dfe_avb.txt \
+            README.txt
+          unzip -t /tmp/decrypt.zip
+          stat -c '%n %s bytes' /tmp/decrypt.zip
+          sha256sum /tmp/decrypt.zip
+
+      - name: Publish decrypt.zip
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: km5n-dfe-decrypt-${{ github.run_id }}
+          name: KM5n DFE decrypt.zip
+          body: |
+            KM5n-specific DFE/fstab vendor patch package.
+
+            Source AVB-finalized artifact:
+            workflow run 35669141904
+
+            Payload:
+            complete AVB-valid vendor image; the package is a flashable patch, not a binary delta.
+          files: /tmp/decrypt.zip
