@@ -24,11 +24,7 @@ jobs:
             echo "apt update failed; retry ${attempt}/3"
             sleep 5
           done
-          sudo apt-get install -y --no-install-recommends \
-            openjdk-17-jdk-headless \
-            git-core gnupg flex bison build-essential zip curl \
-            zlib1g-dev libc6-dev-i386 lib32ncurses6 lib32z1 \
-            libssl-dev bc rsync libelf-dev
+          sudo apt-get install -y --no-install-recommends             openjdk-17-jdk-headless             git-core gnupg flex bison build-essential zip curl             zlib1g-dev libc6-dev-i386 lib32ncurses6 lib32z1             libssl-dev bc rsync libelf-dev
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           java -version
@@ -82,17 +78,10 @@ jobs:
           mkdir -p "$TWRP_DIR"
           cd "$TWRP_DIR"
 
-          repo init \
-            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git \
-            -b twrp-14 \
-            --depth=1 \
-            --partial-clone \
-            --clone-filter=blob:none
+          repo init             -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git             -b twrp-14             --depth=1             --partial-clone             --clone-filter=blob:none
 
           mkdir -p .repo/local_manifests
-          curl -fsSL \
-            https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml \
-            -o .repo/local_manifests/remove-minimal.xml
+          curl -fsSL             https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml             -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
 
           python3 - <<'PY'
@@ -113,16 +102,7 @@ jobs:
           set -x
           # Keep repo sync single-threaded. The previous -j1 sync completed,
           # while -j4 hit the runner's disk ceiling during concurrent checkout.
-          repo sync \
-            -c \
-            -j1 \
-            --force-sync \
-            --no-clone-bundle \
-            --no-tags \
-            --optimized-fetch \
-            --retry-fetches=5 \
-            --prune \
-            --fail-fast 2>&1 | tee repo-sync.log
+          repo sync             -c             -j1             --force-sync             --no-clone-bundle             --no-tags             --optimized-fetch             --retry-fetches=5             --prune             --fail-fast 2>&1 | tee repo-sync.log
           sync_rc=${PIPESTATUS[0]}
           set +x
 
@@ -152,38 +132,27 @@ jobs:
 
           # Copy only the device tree; never copy the whole workspace into
           # itself, which recursively duplicates twrp371/.repo.
-          rsync -a \
-            --exclude='.git' \
-            "$GITHUB_WORKSPACE/device/tecno/km5n/" \
-            "$TWRP_DIR/device/tecno/km5n/"
+          rsync -a             --exclude='.git'             "$GITHUB_WORKSPACE/device/tecno/km5n/"             "$TWRP_DIR/device/tecno/km5n/"
 
-          cp -f \
-            "$TWRP_DIR/device/tecno/km5n/configs/twrp371/BoardConfig.mk" \
-            "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
-          cp -f \
-            "$TWRP_DIR/device/tecno/km5n/configs/twrp371/device.mk" \
-            "$TWRP_DIR/device/tecno/km5n/device.mk"
-          cp -f \
-            "$TWRP_DIR/device/tecno/km5n/configs/twrp371/twrp_km5n.mk" \
-            "$TWRP_DIR/device/tecno/km5n/twrp_km5n.mk"
+          cp -f             "$TWRP_DIR/device/tecno/km5n/configs/twrp371/BoardConfig.mk"             "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
+          cp -f             "$TWRP_DIR/device/tecno/km5n/configs/twrp371/device.mk"             "$TWRP_DIR/device/tecno/km5n/device.mk"
+          cp -f             "$TWRP_DIR/device/tecno/km5n/configs/twrp371/twrp_km5n.mk"             "$TWRP_DIR/device/tecno/km5n/twrp_km5n.mk"
 
           cat > "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk" <<'EOF'
-          PRODUCT_MAKEFILES := \
-              $(LOCAL_DIR)/twrp_km5n.mk
+          PRODUCT_MAKEFILES :=               $(LOCAL_DIR)/twrp_km5n.mk
 
-          COMMON_LUNCH_CHOICES := \
-              twrp_km5n-ap2a-eng \
-              twrp_km5n-ap2a-userdebug
+          COMMON_LUNCH_CHOICES :=               twrp_km5n-ap2a-eng               twrp_km5n-ap2a-userdebug
           EOF
 
           echo '=== Active TWRP 3.7.1 BoardConfig ==='
-          grep -E 'BOARD_BOOT_HEADER_VERSION|BOARD_MOVE_RECOVERY|BOARD_INCLUDE_RECOVERY|TW_INCLUDE_FBE|TW_LOAD_VENDOR_BOOT|TW_DEVICE_VERSION' \
-            "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
+          grep -E 'BOARD_BOOT_HEADER_VERSION|BOARD_MOVE_RECOVERY|BOARD_INCLUDE_RECOVERY|TW_INCLUDE_FBE|TW_LOAD_VENDOR_BOOT|TW_DEVICE_VERSION'             "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
           echo '=== Android 14 lunch choices ==='
           cat "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk"
-          echo '=== Device release config ==='
-          cat "$TWRP_DIR/device/tecno/km5n/release/release_config_map.mk"
-          cat "$TWRP_DIR/device/tecno/km5n/release/ap2a.mk"
+          echo '=== AOSP release config source ==='
+          test -f "$TWRP_DIR/build/release/release_config_map.mk"
+          test -f "$TWRP_DIR/build/release/build_config/ap2a.scl"
+          echo "AOSP release config map: $TWRP_DIR/build/release/release_config_map.mk"
+          echo "AOSP AP2A config: $TWRP_DIR/build/release/build_config/ap2a.scl"
 
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
@@ -199,7 +168,7 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
 
           echo '=== Release config files visible to Android build ==='
-          find device/tecno/km5n/release -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \;
+          find device/tecno/km5n/release -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \; 2>/dev/null || true
           echo '=== Release config maps in source ==='
           find device vendor build/release \( -name 'release_config_map.mk' -o -name 'release_config_map.textproto' \) 2>/dev/null | sort | head -100 || true
 
@@ -233,7 +202,7 @@ jobs:
           cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
           cp -f out/verbose.log.gz build-debug/ 2>/dev/null || true
           cp -f out/soong/release-config.out build-debug/ 2>/dev/null || true
-          find out/soong/release-config -maxdepth 2 -type f -print -exec sh -c 'echo "--- $1"; sed -n "1,160p" "$1"' _ {} \; > build-debug/release-config.txt 2>/dev/null || true
+          find out/soong/release-config -maxdepth 2 -type f -print -exec sh -c 'echo "--- $1"; sed -n '1,160p' "$1"' _ {} \; > build-debug/release-config.txt 2>/dev/null || true
           df -h "$GITHUB_WORKSPACE" > build-debug/disk.txt 2>&1 || true
           du -sh "$TWRP_DIR"/* 2>/dev/null | sort -h > build-debug/top-level-disk.txt || true
 
