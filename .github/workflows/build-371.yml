@@ -193,7 +193,7 @@ jobs:
           test -x out/rbcrun
           echo "rbcrun ready: $(readlink -f out/rbcrun)"
 
-          lunch twrp_km5n-next-eng
+          lunch twrp_km5n next eng
 
           set -u
           echo '=== Selected build variables ==='
