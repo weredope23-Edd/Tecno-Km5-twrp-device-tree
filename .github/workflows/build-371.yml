@@ -15,19 +15,6 @@ jobs:
         uses: rokibhasansagar/slimhub_actions@main
         continue-on-error: true
 
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@master
-        continue-on-error: true
-        with:
-          root-reserve-mb: 2048
-          temp-reserve-mb: 128
-          swap-size-mb: 1024
-          remove-dotnet: 'false'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'false'
-
       - name: Dependencies
         run: |
           set -euxo pipefail
@@ -45,6 +32,18 @@ jobs:
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           java -version
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        continue-on-error: true
+        with:
+          root-reserve-mb: 2048
+          temp-reserve-mb: 128
+          swap-size-mb: 1024
+          remove-dotnet: 'false'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'false'
 
       - name: Manual disk cleanup fallback
         run: |
