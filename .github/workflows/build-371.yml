@@ -119,7 +119,7 @@ jobs:
 
           rm -rf build/release
           mkdir -p build/release
-          curl -fsSL "https://android.googlesource.com/platform/build/release/+archive/4ca41ed071b6297019673f446495021726db8eb4.tar.gz" -o /tmp/build-release.tar.gz
+          curl -fsSL "https://android.googlesource.com/platform/build/release/+archive/4ca41ed.tar.gz" -o /tmp/build-release.tar.gz
           tar -xzf /tmp/build-release.tar.gz -C build/release
           rm -f /tmp/build-release.tar.gz
 
