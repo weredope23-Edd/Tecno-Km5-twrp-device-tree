@@ -187,6 +187,12 @@ jobs:
           find device vendor build/release \( -name 'release_config_map.mk' -o -name 'release_config_map.textproto' \) 2>/dev/null | sort | head -100 || true
 
           source build/envsetup.sh
+
+          echo '=== Bootstrap rbcrun before lunch ==='
+          build/soong/soong_ui.bash --make-mode rbcrun
+          test -x out/rbcrun
+          echo "rbcrun ready: $(readlink -f out/rbcrun)"
+
           lunch twrp_km5n-next-eng
 
           set -u
