@@ -91,7 +91,7 @@ jobs:
           p = Path('.repo/local_manifests/release-config.xml')
           p.write_text('''<?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <project path="build/release" name="platform/build/release" revision="android-14.0.0_r55" groups="pdk,tradefed" />
+            <project path="build/release" name="platform/build/release" revision="refs/tags/android-14.0.0_r55" groups="pdk,tradefed" />
           </manifest>
           ''')
           PY
