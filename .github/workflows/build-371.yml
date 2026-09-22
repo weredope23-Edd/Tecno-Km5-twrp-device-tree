@@ -88,7 +88,8 @@ jobs:
           p = Path('.repo/local_manifests/release-config.xml')
           p.write_text('''<?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <project path="build/release" name="platform/build/release" revision="4ca41ed071b6297019673f446495021726db8eb4" groups="pdk,tradefed" />
+            <remote name="aosp-release" fetch="https://android.googlesource.com/" />
+            <project path="build/release" name="platform/build/release" remote="aosp-release" revision="4ca41ed071b6297019673f446495021726db8eb4" groups="pdk,tradefed" />
           </manifest>
           ''')
           PY
