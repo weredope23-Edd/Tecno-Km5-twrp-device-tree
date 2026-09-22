@@ -193,6 +193,10 @@ jobs:
           test -x out/rbcrun
           echo "rbcrun ready: $(readlink -f out/rbcrun)"
 
+          # TeamWin's Android 14 lunch path uses TARGET_RELEASE during its
+          # dumpvars/bootstrap call. Export it first so the child soong process
+          # receives the selected release instead of treating it as unset.
+          export TARGET_RELEASE=next
           lunch twrp_km5n next eng
 
           set -u
