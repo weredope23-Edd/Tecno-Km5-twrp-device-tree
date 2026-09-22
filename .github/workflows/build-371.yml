@@ -83,7 +83,7 @@ jobs:
           mkdir -p .repo/local_manifests
 
           # The TWRP-14 minimal manifest omits AOSP's separate build/release
-          # project, but Android 14 release_config_map.mk and ap2a.scl live
+          # project, but Android 14 release_config_map.mk and the Android 14 `next` config live
           # there. Add the official AOSP project at the manifest's Android 14
           # revision so the build has the release-config source it expects.
           python3 - <<'PY'
@@ -91,7 +91,7 @@ jobs:
           p = Path('.repo/local_manifests/release-config.xml')
           p.write_text('''<?xml version="1.0" encoding="UTF-8"?>
           <manifest>
-            <project path="build/release" name="platform/build/release" revision="refs/tags/android-14.0.0_r55" groups="pdk,tradefed" />
+            <project path="build/release" name="platform/build/release" revision="3cdf279f533a994e8fc8600c0c269c6cb9f85443" groups="pdk,tradefed" />
           </manifest>
           ''')
           PY
@@ -156,7 +156,7 @@ jobs:
           cat > "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk" <<'EOF'
           PRODUCT_MAKEFILES :=               $(LOCAL_DIR)/twrp_km5n.mk
 
-          COMMON_LUNCH_CHOICES :=               twrp_km5n-ap2a-eng               twrp_km5n-ap2a-userdebug
+          COMMON_LUNCH_CHOICES :=               twrp_km5n-next-eng               twrp_km5n-next-userdebug
           EOF
 
           echo '=== Active TWRP 3.7.1 BoardConfig ==='
@@ -165,9 +165,9 @@ jobs:
           cat "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk"
           echo '=== AOSP release config source ==='
           test -f "$TWRP_DIR/build/release/release_config_map.mk"
-          test -f "$TWRP_DIR/build/release/build_config/ap2a.scl"
+          test -f "$TWRP_DIR/build/release/build_config/next.bzl"
           echo "AOSP release config map: $TWRP_DIR/build/release/release_config_map.mk"
-          echo "AOSP AP2A config: $TWRP_DIR/build/release/build_config/ap2a.scl"
+          echo "AOSP Android 14 next config: $TWRP_DIR/build/release/build_config/next.bzl"
 
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
@@ -188,7 +188,7 @@ jobs:
           find device vendor build/release \( -name 'release_config_map.mk' -o -name 'release_config_map.textproto' \) 2>/dev/null | sort | head -100 || true
 
           source build/envsetup.sh
-          lunch twrp_km5n-ap2a-eng
+          lunch twrp_km5n-next-eng
 
           set -u
           echo '=== Selected build variables ==='
