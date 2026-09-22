@@ -79,17 +79,9 @@ jobs:
 
           mkdir -p .repo/local_manifests
 
-          # TWRP's Android 14 build system expects the post-bzl AOSP release-config layout.
-          # Inject the exact AOSP snapshot as an archive instead of asking repo sync
-          # to fetch an arbitrary SHA with a shallow clone.
-          rm -rf build/release
-          mkdir -p build/release
-          curl -fsSL https://android.googlesource.com/platform/build/release/+archive/4ca41ed071b6297019673f446495021726db8eb4.tar.gz \\
-            | tar -xz -C build/release
-          test -f build/release/release_config_map.mk
-          test -f build/release/build_config/next.scl
-          test -f build/release/build_flags.scl
-
+          # Do not pin build/release to a historical Git SHA in the repo manifest.
+          # The runner uses the normal TWRP manifest during sync, then we replace
+          # build/release with the exact AOSP snapshot needed by this Android 14 build.
           curl -fsSL https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
 
@@ -118,6 +110,23 @@ jobs:
           du -sh .repo 2>/dev/null || true
           du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
           exit "$sync_rc"
+
+      - name: Inject AOSP release-config snapshot
+        run: |
+          set -euxo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          cd "$TWRP_DIR"
+
+          rm -rf build/release
+          mkdir -p build/release
+          curl -fsSL "https://android.googlesource.com/platform/build/release/+archive/4ca41ed071b6297019673f446495021726db8eb4.tar.gz" -o /tmp/build-release.tar.gz
+          tar -xzf /tmp/build-release.tar.gz -C build/release
+          rm -f /tmp/build-release.tar.gz
+
+          test -f build/release/release_config_map.mk
+          test -f build/release/build_config/next.scl
+          test -f build/release/build_flags.scl
+          echo "AOSP release config snapshot injected: 4ca41ed071b6297019673f446495021726db8eb4"
 
       - name: Reclaim repo metadata before adding device tree
         run: |
