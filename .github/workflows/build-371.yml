@@ -202,7 +202,7 @@ jobs:
           echo '=== Release config files visible to Android build ==='
           find device/tecno/km5n/release -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \;
           echo '=== Release config maps in source ==='
-          find device vendor build/release -name 'release_config_map.mk' -o -name 'release_config_map.textproto' 2>/dev/null | sort | head -100
+          find device vendor build/release \( -name 'release_config_map.mk' -o -name 'release_config_map.textproto' \) 2>/dev/null | sort | head -100 || true
 
           source build/envsetup.sh
           lunch twrp_km5n-ap2a-eng
