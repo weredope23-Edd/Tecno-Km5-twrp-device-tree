@@ -165,9 +165,9 @@ jobs:
           cat "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk"
           echo '=== AOSP release config source ==='
           test -f "$TWRP_DIR/build/release/release_config_map.mk"
-          test -f "$TWRP_DIR/build/release/build_config/next.bzl"
+          test -f "$TWRP_DIR/build/release/build_config/next.scl"
           echo "AOSP release config map: $TWRP_DIR/build/release/release_config_map.mk"
-          echo "AOSP Android 14 next config: $TWRP_DIR/build/release/build_config/next.bzl"
+          echo "AOSP Android 14 next config: $TWRP_DIR/build/release/build_config/next.scl"
 
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
