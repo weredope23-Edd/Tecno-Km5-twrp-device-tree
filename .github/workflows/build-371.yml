@@ -81,6 +81,21 @@ jobs:
           repo init             -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git             -b twrp-14             --depth=1             --partial-clone             --clone-filter=blob:none
 
           mkdir -p .repo/local_manifests
+
+          # The TWRP-14 minimal manifest omits AOSP's separate build/release
+          # project, but Android 14 release_config_map.mk and ap2a.scl live
+          # there. Add the official AOSP project at the manifest's Android 14
+          # revision so the build has the release-config source it expects.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.repo/local_manifests/release-config.xml')
+          p.write_text('''<?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <project path="build/release" name="platform/build/release" groups="pdk,tradefed" />
+          </manifest>
+          ''')
+          PY
+
           curl -fsSL             https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml             -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
 
