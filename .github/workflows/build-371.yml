@@ -79,20 +79,16 @@ jobs:
 
           mkdir -p .repo/local_manifests
 
-          # TeamWin Android 14 uses the post-bzl release-config system.
-          # Pin AOSP build/release to the commit that renamed the release
-          # config inputs from .bzl to .scl, so release_config_map.mk and
-          # build/make/core/release_config.mk agree on the file format.
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('.repo/local_manifests/release-config.xml')
-          p.write_text('''<?xml version="1.0" encoding="UTF-8"?>
-          <manifest>
-            <remote name="aosp-release" fetch="https://android.googlesource.com/" />
-            <project path="build/release" name="platform/build/release" remote="aosp-release" revision="4ca41ed071b6297019673f446495021726db8eb4" groups="pdk,tradefed" />
-          </manifest>
-          ''')
-          PY
+          # TWRP's Android 14 build system expects the post-bzl AOSP release-config layout.
+          # Inject the exact AOSP snapshot as an archive instead of asking repo sync
+          # to fetch an arbitrary SHA with a shallow clone.
+          rm -rf build/release
+          mkdir -p build/release
+          curl -fsSL https://android.googlesource.com/platform/build/release/+archive/4ca41ed071b6297019673f446495021726db8eb4.tar.gz \\
+            | tar -xz -C build/release
+          test -f build/release/release_config_map.mk
+          test -f build/release/build_config/next.scl
+          test -f build/release/build_flags.scl
 
           curl -fsSL https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
