@@ -19,7 +19,7 @@ jobs:
         uses: easimon/maximize-build-space@master
         continue-on-error: true
         with:
-          root-reserve-mb: 512
+          root-reserve-mb: 2048
           temp-reserve-mb: 128
           swap-size-mb: 1024
           remove-dotnet: 'false'
