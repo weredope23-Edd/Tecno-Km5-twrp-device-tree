@@ -189,37 +189,53 @@ jobs:
           test -x out/rbcrun
           echo "rbcrun ready: $(readlink -f out/rbcrun)"
 
-          # TeamWin's Android 14 lunch wrapper uses temporary variable
-          # assignments for build_build_var_cache. With this build system,
-          # those assignments are not reliably visible to the child soong
-          # process. Populate the cache directly with exported variables,
-          # then perform the normal post-lunch environment setup.
+          # TeamWin's Android 14 build_envsetup uses shell-variable assignments
+          # around build_build_var_cache. This tree's Soong path is reliable
+          # when the target variables are passed as explicit Soong arguments.
+          # Override only the cache bootstrap function; keep the standard lunch
+          # logic and all other build-system functions unchanged.
+          build_build_var_cache() {
+            local T=$(gettop)
+            cached_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
+            cached_abs_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_abs_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
+
+            build_dicts_script=`\builtin cd "$T"; build/soong/soong_ui.bash --dumpvars-mode \
+              --vars="${cached_vars[*]}" \
+              --abs-vars="${cached_abs_vars[*]}" \
+              --var-prefix=var_cache_ \
+              --abs-var-prefix=abs_var_cache_ \
+              TARGET_PRODUCT="$TARGET_PRODUCT" \
+              TARGET_RELEASE="$TARGET_RELEASE" \
+              TARGET_BUILD_VARIANT="$TARGET_BUILD_VARIANT" \
+              TARGET_BUILD_APPS="$TARGET_BUILD_APPS"`
+            local ret=$?
+            if [ $ret -ne 0 ]; then
+              unset build_dicts_script
+              return $ret
+            fi
+
+            eval "$build_dicts_script"
+            ret=$?
+            unset build_dicts_script
+            if [ $ret -ne 0 ]; then
+              return $ret
+            fi
+            BUILD_VAR_CACHE_READY="true"
+          }
+
           export TARGET_PRODUCT=twrp_km5n
           export TARGET_RELEASE=next
           export TARGET_BUILD_VARIANT=eng
           export TARGET_BUILD_APPS=
 
-          echo '=== Bootstrap build variable cache with explicit exported target ==='
-          build_build_var_cache
-          test "$BUILD_VAR_CACHE_READY" = true
-          test "$var_cache_TARGET_PRODUCT" = twrp_km5n
-          test "$var_cache_TARGET_RELEASE" = next
-          test "$var_cache_TARGET_BUILD_VARIANT" = eng
-
-          export TARGET_PRODUCT="$(get_build_var TARGET_PRODUCT)"
-          export TARGET_BUILD_VARIANT="$(get_build_var TARGET_BUILD_VARIANT)"
-          export TARGET_RELEASE=next
-          export TARGET_BUILD_TYPE=release
-          export TARGET_BUILD_APPS=
+          echo '=== Lunch with explicit Soong target arguments ==='
+          lunch twrp_km5n next eng
 
           echo '=== Selected build variables ==='
           get_build_var TARGET_PRODUCT
           get_build_var TARGET_RELEASE
           get_build_var TARGET_BUILD_VARIANT
           get_build_var PRODUCT_RELEASE_CONFIG_MAPS
-
-          set_stuff_for_environment
-          destroy_build_var_cache
 
           mka vendorbootimage -j2
 
