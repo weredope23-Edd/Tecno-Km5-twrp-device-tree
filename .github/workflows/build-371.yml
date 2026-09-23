@@ -191,10 +191,10 @@ jobs:
           # platform/build/release), so use the platform/build commit that
           # contains the .bzl -> .scl transition.
           mkdir -p build/bazel/utils
-          curl -fsSL "https://android.googlesource.com/platform/build/+/70ed34cc724c54a3b54160d7cf6d159225cfc1a2/bazel/utils/schema_validation.scl?format=TEXT" \
-            | base64 -d > build/bazel/utils/schema_validation.scl
+          curl -fsSL "https://raw.githubusercontent.com/BlissRoms/platform_build_bazel/45fbefff493d861a9f6f41068457bdb89ad932bf/utils/schema_validation.scl" \
+            > build/bazel/utils/schema_validation.scl
           test -s build/bazel/utils/schema_validation.scl
-          echo 'AOSP schema_validation.scl restored from platform/build: 70ed34cc'
+          echo 'schema_validation.scl restored from AOSP build/bazel mirror: 45fbefff'
 
           # These must be exported BEFORE bootstrapping rbcrun. The TeamWin
           # rbcrun bootstrap runs product configuration/dumpvars, which reads
