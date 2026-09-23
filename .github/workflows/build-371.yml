@@ -246,7 +246,7 @@ jobs:
           }
 
           echo '=== Lunch with explicit Android 14 target ==='
-          lunch twrp_km5n next eng
+          lunch twrp_km5n-next-eng
 
           echo '=== Selected build variables ==='
           get_build_var TARGET_PRODUCT
