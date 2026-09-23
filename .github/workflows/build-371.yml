@@ -187,13 +187,14 @@ jobs:
           # The TeamWin Android 14 build tree expects this SCL helper,
           # but the minimal TWRP manifest does not sync build/bazel/utils.
           # release_config.scl loads it while rbcrun evaluates the release
-          # configuration. Restore the exact AOSP file from the same
-          # release-config transition commit used above.
+          # configuration. This file lives in platform/build (not
+          # platform/build/release), so use the platform/build commit that
+          # contains the .bzl -> .scl transition.
           mkdir -p build/bazel/utils
-          curl -fsSL "https://android.googlesource.com/platform/build/+/4ca41ed/bazel/utils/schema_validation.scl?format=TEXT" \
+          curl -fsSL "https://android.googlesource.com/platform/build/+/70ed34cc724c54a3b54160d7cf6d159225cfc1a2/bazel/utils/schema_validation.scl?format=TEXT" \
             | base64 -d > build/bazel/utils/schema_validation.scl
           test -s build/bazel/utils/schema_validation.scl
-          echo 'AOSP schema_validation.scl restored: 4ca41ed'
+          echo 'AOSP schema_validation.scl restored from platform/build: 70ed34cc'
 
           # These must be exported BEFORE bootstrapping rbcrun. The TeamWin
           # rbcrun bootstrap runs product configuration/dumpvars, which reads
