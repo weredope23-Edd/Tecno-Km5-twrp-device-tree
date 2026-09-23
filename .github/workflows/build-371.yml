@@ -184,7 +184,15 @@ jobs:
 
           source build/envsetup.sh
 
-          echo '=== Bootstrap rbcrun before lunch ==='
+          # These must be exported BEFORE bootstrapping rbcrun. The TeamWin
+          # rbcrun bootstrap runs product configuration/dumpvars, which reads
+          # TARGET_RELEASE before the later lunch/cache override is reached.
+          export TARGET_PRODUCT=twrp_km5n
+          export TARGET_RELEASE=next
+          export TARGET_BUILD_VARIANT=eng
+          export TARGET_BUILD_APPS=
+
+          echo '=== Bootstrap rbcrun with explicit Android 14 target ==='
           build/soong/soong_ui.bash --make-mode rbcrun
           test -x out/rbcrun
           echo "rbcrun ready: $(readlink -f out/rbcrun)"
@@ -228,12 +236,8 @@ jobs:
             test "$var_cache_TARGET_BUILD_VARIANT" = eng
             BUILD_VAR_CACHE_READY="true"
           }
-          export TARGET_PRODUCT=twrp_km5n
-          export TARGET_RELEASE=next
-          export TARGET_BUILD_VARIANT=eng
-          export TARGET_BUILD_APPS=
 
-          echo '=== Lunch with explicit Soong target arguments ==='
+          echo '=== Lunch with explicit Android 14 target ==='
           lunch twrp_km5n next eng
 
           echo '=== Selected build variables ==='
@@ -248,7 +252,7 @@ jobs:
           stat -c '%n %s bytes' out/target/product/km5n/vendor_boot.img
           bash device/tecno/km5n/scripts/validate_vendor_boot.sh out/target/product/km5n/vendor_boot.img
           bash device/tecno/km5n/scripts/audit_twrp_output.sh out/target/product/km5n
-          
+
       - name: Collect build logs on failure
         if: failure()
         run: |
