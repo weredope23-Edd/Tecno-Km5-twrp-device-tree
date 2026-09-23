@@ -78,10 +78,6 @@ jobs:
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-14 --depth=1 --partial-clone --clone-filter=blob:none
 
           mkdir -p .repo/local_manifests
-
-          # Do not pin build/release to a historical Git SHA in the repo manifest.
-          # The runner uses the normal TWRP manifest during sync, then we replace
-          # build/release with the exact AOSP snapshot needed by this Android 14 build.
           curl -fsSL https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
 
@@ -193,18 +189,37 @@ jobs:
           test -x out/rbcrun
           echo "rbcrun ready: $(readlink -f out/rbcrun)"
 
-          # TeamWin's Android 14 lunch path uses TARGET_RELEASE during its
-          # dumpvars/bootstrap call. Export it first so the child soong process
-          # receives the selected release instead of treating it as unset.
+          # TeamWin's Android 14 lunch wrapper uses temporary variable
+          # assignments for build_build_var_cache. With this build system,
+          # those assignments are not reliably visible to the child soong
+          # process. Populate the cache directly with exported variables,
+          # then perform the normal post-lunch environment setup.
+          export TARGET_PRODUCT=twrp_km5n
           export TARGET_RELEASE=next
-          lunch twrp_km5n next eng
+          export TARGET_BUILD_VARIANT=eng
+          export TARGET_BUILD_APPS=
 
-          set -u
+          echo '=== Bootstrap build variable cache with explicit exported target ==='
+          build_build_var_cache
+          test "$BUILD_VAR_CACHE_READY" = true
+          test "$var_cache_TARGET_PRODUCT" = twrp_km5n
+          test "$var_cache_TARGET_RELEASE" = next
+          test "$var_cache_TARGET_BUILD_VARIANT" = eng
+
+          export TARGET_PRODUCT="$(get_build_var TARGET_PRODUCT)"
+          export TARGET_BUILD_VARIANT="$(get_build_var TARGET_BUILD_VARIANT)"
+          export TARGET_RELEASE=next
+          export TARGET_BUILD_TYPE=release
+          export TARGET_BUILD_APPS=
+
           echo '=== Selected build variables ==='
           get_build_var TARGET_PRODUCT
           get_build_var TARGET_RELEASE
           get_build_var TARGET_BUILD_VARIANT
           get_build_var PRODUCT_RELEASE_CONFIG_MAPS
+
+          set_stuff_for_environment
+          destroy_build_var_cache
 
           mka vendorbootimage -j2
 
@@ -212,7 +227,7 @@ jobs:
           stat -c '%n %s bytes' out/target/product/km5n/vendor_boot.img
           bash device/tecno/km5n/scripts/validate_vendor_boot.sh out/target/product/km5n/vendor_boot.img
           bash device/tecno/km5n/scripts/audit_twrp_output.sh out/target/product/km5n
-
+          
       - name: Collect build logs on failure
         if: failure()
         run: |
