@@ -192,8 +192,16 @@ jobs:
           export TARGET_BUILD_VARIANT=eng
           export TARGET_BUILD_APPS=
 
-          echo '=== Bootstrap rbcrun with explicit Android 14 target ==='
-          build/soong/soong_ui.bash --make-mode rbcrun
+          echo '=== Bootstrap rbcrun directly with microfactory ==='
+          # soong_ui.bash itself bootstraps rbcrun before it executes any
+          # requested mode. Calling soong_ui.bash --make-mode rbcrun therefore
+          # creates a circular bootstrap: its rbcrun build enters product
+          # configuration, which calls rbcrun before the binary exists.
+          # Build rbcrun directly with the same microfactory helper used by
+          # TeamWin's soong_ui.bash, then use the normal soong_ui entrypoint.
+          export TOP="$TWRP_DIR"
+          source "$TOP/build/soong/scripts/microfactory.bash"
+          soong_build_go rbcrun rbcrun/rbcrun
           test -x out/rbcrun
           echo "rbcrun ready: $(readlink -f out/rbcrun)"
 
