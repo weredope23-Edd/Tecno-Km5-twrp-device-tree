@@ -184,6 +184,24 @@ jobs:
 
           source build/envsetup.sh
 
+          # TeamWin's Android 14 envsetup defines run-starlark with
+          # KATI_shell_no_rerun. On this branch's dumpvars path, that
+          # deferred shell action can leave the starlark result file absent
+          # even though rbcrun itself is ready. Use a normal shell action
+          # for this compatibility path so release_config_entrypoint.scl
+          # is evaluated during dumpvars.
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("build/make/core/envsetup.mk")
+          s = p.read_text()
+          old = "$(KATI_shell_no_rerun mkdir -p $(OUT_DIR)/starlark_results && $(OUT_DIR)/rbcrun --mode=make $(3) $(1) >$(_starlark_results) && touch -t 200001010000 $(_starlark_results))"
+          new = "$(shell mkdir -p $(OUT_DIR)/starlark_results && $(OUT_DIR)/rbcrun --mode=make $(3) $(1) >$(_starlark_results) && touch -t 200001010000 $(_starlark_results))"
+          if s.count(old) != 1:
+              raise SystemExit("Expected exactly one run-starlark KATI_shell_no_rerun line")
+          p.write_text(s.replace(old, new))
+          PY
+          grep -F '$(shell mkdir -p $(OUT_DIR)/starlark_results' build/make/core/envsetup.mk
+
           # These must be exported BEFORE bootstrapping rbcrun. The TeamWin
           # rbcrun bootstrap runs product configuration/dumpvars, which reads
           # TARGET_RELEASE before the later lunch/cache override is reached.
