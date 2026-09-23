@@ -200,7 +200,7 @@ jobs:
             cached_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
             cached_abs_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_abs_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
 
-            build_dicts_script=``builtin cd "$T"; env \
+            build_dicts_script=`builtin cd "$T"; env \
               TARGET_PRODUCT="$TARGET_PRODUCT" \
               TARGET_RELEASE="$TARGET_RELEASE" \
               TARGET_BUILD_VARIANT="$TARGET_BUILD_VARIANT" \
@@ -209,7 +209,7 @@ jobs:
               --vars="${cached_vars[*]}" \
               --abs-vars="${cached_abs_vars[*]}" \
               --var-prefix=var_cache_ \
-              --abs-var-prefix=abs_var_cache_``
+              --abs-var-prefix=abs_var_cache_`
             local ret=$?
             if [ $ret -ne 0 ]; then
               unset build_dicts_script
