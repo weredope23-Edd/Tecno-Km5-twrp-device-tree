@@ -190,7 +190,7 @@ jobs:
           # configuration. Restore the exact AOSP file from the same
           # release-config transition commit used above.
           mkdir -p build/bazel/utils
-          curl -fsSL "https://android.googlesource.com/platform/build/+/4ca41ed/utils/schema_validation.scl?format=TEXT" \
+          curl -fsSL "https://android.googlesource.com/platform/build/+/4ca41ed/bazel/utils/schema_validation.scl?format=TEXT" \
             | base64 -d > build/bazel/utils/schema_validation.scl
           test -s build/bazel/utils/schema_validation.scl
           echo 'AOSP schema_validation.scl restored: 4ca41ed'
