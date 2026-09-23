@@ -187,9 +187,7 @@ jobs:
           # starlark result absent. Force run-starlark to execute normally.
           python3 - <<'PY'
           from pathlib import Path
-          p = Path("build/soong/scripts/microfactory.bash")
-          # Keep the source tree untouched until after envsetup is sourced.
-          envsetup = Path("build/soong/../../make/core/envsetup.mk")
+          envsetup = Path("build/make/core/envsetup.mk")
           s = envsetup.read_text()
           old = "$(KATI_shell_no_rerun mkdir -p $(OUT_DIR)/starlark_results && $(OUT_DIR)/rbcrun --mode=make $(3) $(1) >$(_starlark_results) && touch -t 200001010000 $(_starlark_results))"
           new = "$(shell mkdir -p $(OUT_DIR)/starlark_results && $(OUT_DIR)/rbcrun --mode=make $(3) $(1) >$(_starlark_results) && touch -t 200001010000 $(_starlark_results))"
