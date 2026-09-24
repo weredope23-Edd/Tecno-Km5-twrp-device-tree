@@ -1,0 +1,281 @@
+name: Build TWRP KM5n (3.7.1 / Android 14) — Fast Incremental
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: twrp-km5n-fast-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, x64, twrp-km5n]
+    timeout-minutes: 180
+    steps:
+      - name: Checkout device tree
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Show persistent workspace
+        run: |
+          set -euo pipefail
+          df -h /
+          df -h "$GITHUB_WORKSPACE"
+          if [ -d "$GITHUB_WORKSPACE/twrp371" ]; then du -sh "$GITHUB_WORKSPACE/twrp371"; fi
+
+      - name: Show runner disk space
+        run: |
+          set -eux
+          df -h /
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Install repo
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          chmod a+x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Sync TWRP 3.7.1 source
+        run: |
+          set -uo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          mkdir -p "$TWRP_DIR"
+          cd "$TWRP_DIR"
+
+          if [ ! -f .repo/manifest.xml ]; then
+            echo '=== First run: initialize TWRP 3.7.1 source ==='
+            repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-14 --depth=1 --partial-clone --clone-filter=blob:none
+          else
+            echo '=== Reusing persistent TWRP source; skipping repo init ==='
+          fi
+
+          mkdir -p .repo/local_manifests
+          curl -fsSL https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml -o .repo/local_manifests/remove-minimal.xml
+          test -s .repo/local_manifests/remove-minimal.xml
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.repo/local_manifests/remove-minimal.xml')
+          s = p.read_text()
+          s = s.replace('<remove-project ', '<remove-project optional="true" ')
+          s = s.replace('<remove-project optional="true" optional="true" ', '<remove-project optional="true" ')
+          p.write_text(s)
+          PY
+
+          echo '=== Manifest initialized ==='
+          test -f .repo/manifest.xml
+          wc -l .repo/manifest.xml
+          wc -l .repo/local_manifests/remove-minimal.xml
+          df -h "$GITHUB_WORKSPACE"
+
+          set -x
+          repo sync -c -j2 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune --fail-fast 2>&1 | tee repo-sync.log
+          sync_rc=${PIPESTATUS[0]}
+          set +x
+
+          echo "repo sync exit code: ${sync_rc}"
+          df -h "$GITHUB_WORKSPACE"
+          du -sh .repo 2>/dev/null || true
+          du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
+          exit "$sync_rc"
+
+      - name: Inject AOSP release-config snapshot
+        run: |
+          set -euxo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          cd "$TWRP_DIR"
+
+          rm -rf build/release
+          mkdir -p build/release
+          curl -fsSL "https://android.googlesource.com/platform/build/release/+archive/4ca41ed.tar.gz" -o /tmp/build-release.tar.gz
+          tar -xzf /tmp/build-release.tar.gz -C build/release
+          rm -f /tmp/build-release.tar.gz
+
+          test -f build/release/release_config_map.mk
+          test -f build/release/build_config/next.scl
+          test -f build/release/build_flags.scl
+          echo "AOSP release config snapshot injected: 4ca41ed071b6297019673f446495021726db8eb4"
+
+      - name: Add KM5n device tree
+        run: |
+          set -euxo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          mkdir -p "$TWRP_DIR/device/tecno/km5n"
+
+          rsync -a --exclude='.git' "$GITHUB_WORKSPACE/device/tecno/km5n/" "$TWRP_DIR/device/tecno/km5n/"
+
+          cp -f "$TWRP_DIR/device/tecno/km5n/configs/twrp371/BoardConfig.mk" "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
+          cp -f "$TWRP_DIR/device/tecno/km5n/configs/twrp371/device.mk" "$TWRP_DIR/device/tecno/km5n/device.mk"
+          cp -f "$TWRP_DIR/device/tecno/km5n/configs/twrp371/twrp_km5n.mk" "$TWRP_DIR/device/tecno/km5n/twrp_km5n.mk"
+
+          cat > "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk" <<'EOF'
+          PRODUCT_MAKEFILES := \
+              $(LOCAL_DIR)/twrp_km5n.mk
+
+          COMMON_LUNCH_CHOICES := \
+              twrp_km5n-next-eng \
+              twrp_km5n-next-userdebug
+          EOF
+
+          echo '=== Active TWRP 3.7.1 BoardConfig ==='
+          grep -E 'BOARD_BOOT_HEADER_VERSION|BOARD_MOVE_RECOVERY|BOARD_INCLUDE_RECOVERY|TW_INCLUDE_FBE|TW_LOAD_VENDOR_BOOT|TW_DEVICE_VERSION' "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
+          echo '=== Android 14 lunch choices ==='
+          cat "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk"
+          echo '=== AOSP release config source ==='
+          test -f "$TWRP_DIR/build/release/release_config_map.mk"
+          test -f "$TWRP_DIR/build/release/build_config/next.scl"
+          test -f "$TWRP_DIR/build/release/build_flags.scl"
+          echo "AOSP release config revision: 4ca41ed071b6297019673f446495021726db8eb4"
+
+      - name: Build TWRP 3.7.1 vendor_boot
+        run: |
+          set -eo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          cd "$TWRP_DIR"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          export TMPDIR="$TWRP_DIR/tmp"
+          mkdir -p "$TMPDIR"
+
+          echo '=== Disk before build ==='
+          df -h "$GITHUB_WORKSPACE"
+
+          echo '=== Release config files visible to Android build ==='
+          find device/tecno/km5n/release -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \; 2>/dev/null || true
+          echo '=== Release config maps in source ==='
+          find device vendor build/release \( -name 'release_config_map.mk' -o -name 'release_config_map.textproto' \) 2>/dev/null | sort | head -100 || true
+
+          # Kati's shell helper can report success without replaying the
+          # rbcrun command in this minimal TWRP tree, leaving the generated
+          # starlark result absent. Force run-starlark to execute normally.
+          python3 - <<'PY'
+          from pathlib import Path
+          envsetup = Path("build/make/core/envsetup.mk")
+          s = envsetup.read_text()
+          old = "$(KATI_shell_no_rerun mkdir -p $(OUT_DIR)/starlark_results && $(OUT_DIR)/rbcrun --mode=make $(3) $(1) >$(_starlark_results) && touch -t 200001010000 $(_starlark_results))"
+          new = "$(shell mkdir -p $(OUT_DIR)/starlark_results && $(OUT_DIR)/rbcrun --mode=make $(3) $(1) >$(_starlark_results) && touch -t 200001010000 $(_starlark_results))"
+          if old not in s:
+              raise SystemExit("expected run-starlark KATI helper not found")
+          envsetup.write_text(s.replace(old, new, 1))
+          PY
+
+          source build/envsetup.sh
+
+          # The TeamWin Android 14 build tree expects this SCL helper,
+          # but the minimal TWRP manifest does not sync build/bazel/utils.
+          # release_config.scl loads it while rbcrun evaluates the release
+          # configuration. This file lives in platform/build (not
+          # platform/build/release), so use the platform/build commit that
+          # contains the .bzl -> .scl transition.
+          mkdir -p build/bazel/utils
+          curl -fsSL "https://raw.githubusercontent.com/BlissRoms/platform_build_bazel/45fbefff493d861a9f6f41068457bdb89ad932bf/utils/schema_validation.scl" \
+            > build/bazel/utils/schema_validation.scl
+          test -s build/bazel/utils/schema_validation.scl
+          echo 'schema_validation.scl restored from AOSP build/bazel mirror: 45fbefff'
+
+          # These must be exported BEFORE bootstrapping rbcrun. The TeamWin
+          # rbcrun bootstrap runs product configuration/dumpvars, which reads
+          # TARGET_RELEASE before the later lunch/cache override is reached.
+          export TARGET_PRODUCT=twrp_km5n
+          export TARGET_RELEASE=next
+          export TARGET_BUILD_VARIANT=eng
+          export TARGET_BUILD_APPS=
+
+          echo '=== Bootstrap rbcrun directly with microfactory ==='
+          # soong_ui.bash itself bootstraps rbcrun before it executes any
+          # requested mode. Calling soong_ui.bash --make-mode rbcrun therefore
+          # creates a circular bootstrap: its rbcrun build enters product
+          # configuration, which calls rbcrun before the binary exists.
+          # Build rbcrun directly with the same microfactory helper used by
+          # TeamWin's soong_ui.bash, then use the normal soong_ui entrypoint.
+          export TOP="$TWRP_DIR"
+          source "$TOP/build/soong/scripts/microfactory.bash"
+          soong_build_go rbcrun rbcrun/rbcrun
+          test -x out/rbcrun
+          echo "rbcrun ready: $(readlink -f out/rbcrun)"
+
+          # TeamWin's Android 14 build_envsetup uses shell-variable assignments
+          # around build_build_var_cache. A variable assignment before a shell
+          # function is not guaranteed to become part of the child process
+          # environment, so put the target variables directly in the environment
+          # of the soong_ui process.
+          # Override only the cache bootstrap function; keep standard lunch logic.
+          build_build_var_cache() {
+            local T=$(gettop)
+            cached_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
+            cached_abs_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_abs_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
+
+            build_dicts_script=`builtin cd "$T"; env \
+              TARGET_PRODUCT="$TARGET_PRODUCT" \
+              TARGET_RELEASE="$TARGET_RELEASE" \
+              TARGET_BUILD_VARIANT="$TARGET_BUILD_VARIANT" \
+              TARGET_BUILD_APPS="$TARGET_BUILD_APPS" \
+              build/soong/soong_ui.bash --dumpvars-mode \
+              --vars="${cached_vars[*]}" \
+              --abs-vars="${cached_abs_vars[*]}" \
+              --var-prefix=var_cache_ \
+              --abs-var-prefix=abs_var_cache_`
+            local ret=$?
+            if [ $ret -ne 0 ]; then
+              unset build_dicts_script
+              return $ret
+            fi
+
+            eval "$build_dicts_script"
+            ret=$?
+            unset build_dicts_script
+            if [ $ret -ne 0 ]; then
+              return $ret
+            fi
+
+            test "$var_cache_TARGET_PRODUCT" = twrp_km5n
+            test "$var_cache_TARGET_RELEASE" = next
+            test "$var_cache_TARGET_BUILD_VARIANT" = eng
+            BUILD_VAR_CACHE_READY="true"
+          }
+
+          echo '=== Lunch with explicit Android 14 target ==='
+          lunch twrp_km5n-next-eng
+
+          echo '=== Selected build variables ==='
+          get_build_var TARGET_PRODUCT
+          get_build_var TARGET_RELEASE
+          get_build_var TARGET_BUILD_VARIANT
+          get_build_var PRODUCT_RELEASE_CONFIG_MAPS
+
+          mka vendorbootimage -j2
+
+          test -s out/target/product/km5n/vendor_boot.img
+          stat -c '%n %s bytes' out/target/product/km5n/vendor_boot.img
+          bash device/tecno/km5n/scripts/validate_vendor_boot.sh out/target/product/km5n/vendor_boot.img
+          bash device/tecno/km5n/scripts/audit_twrp_output.sh out/target/product/km5n
+
+      - name: Collect build logs on failure
+        if: failure()
+        run: |
+          set +e
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          cd "$TWRP_DIR" 2>/dev/null || exit 0
+          mkdir -p build-debug
+          cp -f repo-sync.log build-debug/ 2>/dev/null || true
+          cp -f .repo/manifest.xml build-debug/manifest.xml 2>/dev/null || true
+          cp -f .repo/local_manifests/remove-minimal.xml build-debug/ 2>/dev/null || true
+          cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
+          cp -f out/verbose.log.gz build-debug/ 2>/dev/null || true
+          cp -f out/soong/release-config.out build-debug/ 2>/dev/null || true
+          find out/soong/release-config -maxdepth 2 -type f -print -exec sh -c 'echo "--- $1"; sed -n '1,160p' "$1"' _ {} \; > build-debug/release-config.txt 2>/dev/null || true
+          df -h "$GITHUB_WORKSPACE" > build-debug/disk.txt 2>&1 || true
+          du -sh "$TWRP_DIR"/* 2>/dev/null | sort -h > build-debug/top-level-disk.txt || true
+
+      - name: Upload build output
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: twrp-km5n-371-build-output
+          path: |
+            ${{ github.workspace }}/twrp371/out/target/product/km5n/vendor_boot.img
+            ${{ github.workspace }}/twrp371/build-debug/**
+          if-no-files-found: warn
