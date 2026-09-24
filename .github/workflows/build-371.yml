@@ -68,6 +68,14 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
+      - name: Restore TWRP repo metadata cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/twrp371/.repo
+          key: twrp-14-repo-v1-${{ runner.os }}
+          restore-keys: |
+            twrp-14-repo-v1-
+
       - name: Sync TWRP 3.7.1 source
         run: |
           set -uo pipefail
@@ -106,6 +114,14 @@ jobs:
           du -sh .repo 2>/dev/null || true
           du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
           exit "$sync_rc"
+
+      - name: Save TWRP repo metadata cache
+        if: success()
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/twrp371/.repo
+          key: twrp-14-repo-v1-${{ runner.os }}
 
       - name: Inject AOSP release-config snapshot
         run: |
