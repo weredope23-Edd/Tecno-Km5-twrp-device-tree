@@ -32,7 +32,7 @@ jobs:
       DEVICE_PATH: device/tecno/km5n
       LUNCH_TARGET: twrp_km5n-eng
       BUILD_TARGET: vendorbootimage
-      BUILD_JOBS: ${{ inputs.build_jobs }}
+      BUILD_JOBS: ${{ inputs.build_jobs || '2' }}
 
     steps:
       # IMPORTANT: maximize-build-space must run before checkout. It mounts a
@@ -53,7 +53,20 @@ jobs:
       - name: Checkout device tree
         uses: actions/checkout@v7
         with:
+          # Pin the source tree to the exact commit that contains the
+          # workflow being executed. This prevents a workflow file from one
+          # commit accidentally building the device tree from another.
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 1
+
+      - name: Verify workflow/source identity
+        run: |
+          set -euxo pipefail
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "GITHUB_WORKFLOW_SHA=$GITHUB_WORKFLOW_SHA"
+          echo "Checked-out HEAD=$(git rev-parse HEAD)"
+          test "$(git rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
 
       - name: Verify runner capacity
         run: |
