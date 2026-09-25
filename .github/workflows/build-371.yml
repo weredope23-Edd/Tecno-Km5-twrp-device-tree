@@ -48,6 +48,8 @@ jobs:
           sudo rm -rf /tmp/* /var/tmp/* 2>/dev/null || true
           df -h /
           df -h "$GITHUB_WORKSPACE"
+          df -i /
+          df -i "$GITHUB_WORKSPACE"
 
       - name: Checkout device tree
         uses: actions/checkout@v4
@@ -59,6 +61,8 @@ jobs:
           set -eux
           df -h /
           df -h "$GITHUB_WORKSPACE"
+          df -i /
+          df -i "$GITHUB_WORKSPACE"
 
       - name: Install repo
         run: |
@@ -103,16 +107,35 @@ jobs:
           wc -l .repo/manifest.xml
           wc -l .repo/local_manifests/remove-minimal.xml
           df -h "$GITHUB_WORKSPACE"
+          df -i "$GITHUB_WORKSPACE"
 
           set -x
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune --fail-fast 2>&1 | tee repo-sync.log
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee repo-sync.log
           sync_rc=${PIPESTATUS[0]}
           set +x
 
           echo "repo sync exit code: ${sync_rc}"
+          df -h /
           df -h "$GITHUB_WORKSPACE"
+          df -i /
+          df -i "$GITHUB_WORKSPACE"
           du -sh .repo 2>/dev/null || true
           du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
+
+          if [ "$sync_rc" -ne 0 ]; then
+            echo '=== Failed project diagnostics ==='
+            repo status 2>&1 || true
+            echo '=== platform/development directory ==='
+            ls -la platform/development 2>&1 || true
+            echo '=== platform/development git config ==='
+            git -C platform/development config --list --show-origin 2>&1 || true
+            echo '=== platform/development HEAD ==='
+            git -C platform/development rev-parse HEAD 2>&1 || true
+            echo '=== platform/development status ==='
+            git -C platform/development status --short --branch 2>&1 || true
+            echo '=== recent sync errors ==='
+            grep -n -E 'error:|fatal:|Cannot checkout|Cannot initialize|No space|ENOSPC|Permission denied|unable to|failed' repo-sync.log | tail -100 || true
+          fi
           exit "$sync_rc"
 
       - name: Prepare trimmed TWRP repo cache
@@ -124,11 +147,7 @@ jobs:
           export CACHE_DIR="$GITHUB_WORKSPACE/twrp371-cache/.repo"
           rm -rf "$GITHUB_WORKSPACE/twrp371-cache"
           mkdir -p "$CACHE_DIR"
-
-          # Keep the repo metadata and Git object database, but trim large
-          # pack files if necessary. Git can fetch omitted objects again.
           rsync -a --exclude='*.log' --exclude='*.tmp' "$TWRP_DIR/.repo/" "$CACHE_DIR/"
-
           LIMIT=$((9500 * 1024 * 1024))
           size=$(du -sb "$CACHE_DIR" | cut -f1)
           while [ "$size" -gt "$LIMIT" ]; do
@@ -138,7 +157,6 @@ jobs:
             rm -f "$candidate"
             size=$(du -sb "$CACHE_DIR" | cut -f1)
           done
-
           echo "Trimmed repo cache:"
           du -sh "$CACHE_DIR"
           df -h "$GITHUB_WORKSPACE"
@@ -156,17 +174,15 @@ jobs:
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
           cd "$TWRP_DIR"
-
           rm -rf build/release
           mkdir -p build/release
           curl -fL --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 300 "https://android.googlesource.com/platform/build/release/+archive/4ca41ed.tar.gz" -o /tmp/build-release.tar.gz
           tar -xzf /tmp/build-release.tar.gz -C build/release
           rm -f /tmp/build-release.tar.gz
-
           test -f build/release/release_config_map.mk
           test -f build/release/build_config/next.scl
           test -f build/release/build_flags.scl
-          echo "AOSP release config snapshot injected: 4ca41ed071b6297019673f446495021726db8eb8"
+          echo "AOSP release config snapshot injected: 4ca41ed071b6297019673f446495021726db8eb54"
 
       - name: Reclaim repo metadata before adding device tree
         run: |
@@ -202,7 +218,7 @@ jobs:
           test -f "$TWRP_DIR/build/release/release_config_map.mk"
           test -f "$TWRP_DIR/build/release/build_config/next.scl"
           test -f "$TWRP_DIR/build/release/build_flags.scl"
-          echo "AOSP release config revision: 4ca41ed071b6297019673f446495021726db8eb8"
+          echo "AOSP release config revision: 4ca41ed071b6297019673f446495021726db8eb54"
 
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
@@ -231,8 +247,7 @@ jobs:
           PY
           source build/envsetup.sh
           mkdir -p build/bazel/utils
-          curl -fsSL "https://raw.githubusercontent.com/BlissRoms/platform_build_bazel/45fbefff493d861a9f6f41068457bdb89ad932bf/utils/schema_validation.scl" \
-            > build/bazel/utils/schema_validation.scl
+          curl -fsSL "https://raw.githubusercontent.com/BlissRoms/platform_build_bazel/45fbefff493d861a9f6f41068457bdb89ad932bf/utils/schema_validation.scl" > build/bazel/utils/schema_validation.scl
           test -s build/bazel/utils/schema_validation.scl
           echo 'schema_validation.scl restored from AOSP build/bazel mirror: 45fbefff'
           export TARGET_PRODUCT=twrp_km5n
@@ -247,29 +262,15 @@ jobs:
           echo "rbcrun ready: $(readlink -f out/rbcrun)"
           build_build_var_cache() {
             local T=$(gettop)
-            cached_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
-            cached_abs_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_abs_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
-            build_dicts_script=`builtin cd "$T"; env \
-              TARGET_PRODUCT="$TARGET_PRODUCT" \
-              TARGET_RELEASE="$TARGET_RELEASE" \
-              TARGET_BUILD_VARIANT="$TARGET_BUILD_VARIANT" \
-              TARGET_BUILD_APPS="$TARGET_BUILD_APPS" \
-              build/soong/soong_ui.bash --dumpvars-mode \
-              --vars="${cached_vars[*]}" \
-              --abs-vars="${cached_abs_vars[*]}" \
-              --var-prefix=var_cache_ \
-              --abs-var-prefix=abs_var_cache_`
+            cached_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_build_var_cached/) print $(i+1)}' | sort -u | tr '\n' ' '`)
+            cached_abs_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_abs_build_var_cached/) print $(i+1)}' | sort -u | tr '\n' ' '`)
+            build_dicts_script=`builtin cd "$T"; env TARGET_PRODUCT="$TARGET_PRODUCT" TARGET_RELEASE="$TARGET_RELEASE" TARGET_BUILD_VARIANT="$TARGET_BUILD_VARIANT" TARGET_BUILD_APPS="$TARGET_BUILD_APPS" build/soong/soong_ui.bash --dumpvars-mode --vars="${cached_vars[*]}" --abs-vars="${cached_abs_vars[*]}" --var-prefix=var_cache_ --abs-var-prefix=abs_var_cache_`
             local ret=$?
-            if [ $ret -ne 0 ]; then
-              unset build_dicts_script
-              return $ret
-            fi
+            if [ $ret -ne 0 ]; then unset build_dicts_script; return $ret; fi
             eval "$build_dicts_script"
             ret=$?
             unset build_dicts_script
-            if [ $ret -ne 0 ]; then
-              return $ret
-            fi
+            if [ $ret -ne 0 ]; then return $ret; fi
             test "$var_cache_TARGET_PRODUCT" = twrp_km5n
             test "$var_cache_TARGET_RELEASE" = next
             test "$var_cache_TARGET_BUILD_VARIANT" = eng
@@ -287,6 +288,7 @@ jobs:
           stat -c '%n %s bytes' out/target/product/km5n/vendor_boot.img
           bash device/tecno/km5n/scripts/validate_vendor_boot.sh out/target/product/km5n/vendor_boot.img
           bash device/tecno/km5n/scripts/audit_twrp_output.sh out/target/product/km5n
+
       - name: Collect build logs on failure
         if: failure()
         run: |
@@ -302,6 +304,7 @@ jobs:
           cp -f out/soong/release-config.out build-debug/ 2>/dev/null || true
           find out/soong/release-config -maxdepth 2 -type f -print -exec sh -c 'echo "--- $1"; sed -n '1,160p' "$1"' _ {} \; > build-debug/release-config.txt 2>/dev/null || true
           df -h "$GITHUB_WORKSPACE" > build-debug/disk.txt 2>&1 || true
+          df -i "$GITHUB_WORKSPACE" > build-debug/inodes.txt 2>&1 || true
           du -sh "$TWRP_DIR"/* 2>/dev/null | sort -h > build-debug/top-level-disk.txt || true
       - name: Upload build output
         uses: actions/upload-artifact@v4
