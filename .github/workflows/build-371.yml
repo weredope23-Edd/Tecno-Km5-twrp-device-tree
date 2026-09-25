@@ -72,9 +72,9 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/twrp371/.repo
-          key: twrp-14-repo-v1-${{ runner.os }}
+          key: twrp-14-repo-v3-${{ runner.os }}
           restore-keys: |
-            twrp-14-repo-v1-
+            twrp-14-repo-v3-
 
       - name: Sync TWRP 3.7.1 source
         run: |
@@ -115,13 +115,43 @@ jobs:
           du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
           exit "$sync_rc"
 
+      - name: Prepare trimmed TWRP repo cache
+        if: success()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          export CACHE_DIR="$GITHUB_WORKSPACE/twrp371-cache/.repo"
+          rm -rf "$GITHUB_WORKSPACE/twrp371-cache"
+          mkdir -p "$CACHE_DIR"
+
+          # Keep the complete repo metadata/object layout, but cap the staged
+          # cache below GitHub's default 10 GB repository cache allowance.
+          # Only complete Git pack/index pairs are removed; repo sync can fetch
+          # any omitted objects again on the next run.
+          rsync -a --exclude='*.log' --exclude='*.tmp' "$TWRP_DIR/.repo/" "$CACHE_DIR/"
+          LIMIT=$((9500 * 1024 * 1024))
+          size=$(du -sb "$CACHE_DIR" | cut -f1)
+          while [ "$size" -gt "$LIMIT" ]; do
+            candidate=$(find "$CACHE_DIR" -type f -name '*.pack' -printf '%s %p\n' 2>/dev/null | sort -nr | head -1 | cut -d' ' -f2-)
+            [ -n "$candidate" ] || break
+            base="${candidate%.pack}"
+            echo "Dropping cache pack pair: ${base}.pack / ${base}.idx"
+            rm -f "${base}.pack" "${base}.idx"
+            size=$(du -sb "$CACHE_DIR" | cut -f1)
+          done
+
+          echo '=== Trimmed repo cache ==='
+          du -sh "$CACHE_DIR"
+          df -h "$GITHUB_WORKSPACE"
+
       - name: Save TWRP repo metadata cache
         if: success()
         continue-on-error: true
         uses: actions/cache/save@v4
         with:
-          path: ${{ github.workspace }}/twrp371/.repo
-          key: twrp-14-repo-v1-${{ runner.os }}
+          path: ${{ github.workspace }}/twrp371-cache/.repo
+          key: twrp-14-repo-v3-${{ runner.os }}
 
       - name: Inject AOSP release-config snapshot
         run: |
@@ -138,7 +168,7 @@ jobs:
           test -f build/release/release_config_map.mk
           test -f build/release/build_config/next.scl
           test -f build/release/build_flags.scl
-          echo "AOSP release config snapshot injected: 4ca41ed071b6297019673f446495021726db8eb4"
+          echo "AOSP release config snapshot injected: 4ca41ed071b6297019673f446495021726db8eb54"
 
       - name: Reclaim repo metadata before adding device tree
         run: |
@@ -178,7 +208,7 @@ jobs:
           test -f "$TWRP_DIR/build/release/release_config_map.mk"
           test -f "$TWRP_DIR/build/release/build_config/next.scl"
           test -f "$TWRP_DIR/build/release/build_flags.scl"
-          echo "AOSP release config revision: 4ca41ed071b6297019673f446495021726db8eb4"
+          echo "AOSP release config revision: 4ca41ed071b6297019673f446495021726db8eb54"
 
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
@@ -214,45 +244,24 @@ jobs:
 
           source build/envsetup.sh
 
-          # The TeamWin Android 14 build tree expects this SCL helper,
-          # but the minimal TWRP manifest does not sync build/bazel/utils.
-          # release_config.scl loads it while rbcrun evaluates the release
-          # configuration. This file lives in platform/build (not
-          # platform/build/release), so use the platform/build commit that
-          # contains the .bzl -> .scl transition.
           mkdir -p build/bazel/utils
           curl -fsSL "https://raw.githubusercontent.com/BlissRoms/platform_build_bazel/45fbefff493d861a9f6f41068457bdb89ad932bf/utils/schema_validation.scl" \
             > build/bazel/utils/schema_validation.scl
           test -s build/bazel/utils/schema_validation.scl
           echo 'schema_validation.scl restored from AOSP build/bazel mirror: 45fbefff'
 
-          # These must be exported BEFORE bootstrapping rbcrun. The TeamWin
-          # rbcrun bootstrap runs product configuration/dumpvars, which reads
-          # TARGET_RELEASE before the later lunch/cache override is reached.
           export TARGET_PRODUCT=twrp_km5n
           export TARGET_RELEASE=next
           export TARGET_BUILD_VARIANT=eng
           export TARGET_BUILD_APPS=
 
           echo '=== Bootstrap rbcrun directly with microfactory ==='
-          # soong_ui.bash itself bootstraps rbcrun before it executes any
-          # requested mode. Calling soong_ui.bash --make-mode rbcrun therefore
-          # creates a circular bootstrap: its rbcrun build enters product
-          # configuration, which calls rbcrun before the binary exists.
-          # Build rbcrun directly with the same microfactory helper used by
-          # TeamWin's soong_ui.bash, then use the normal soong_ui entrypoint.
           export TOP="$TWRP_DIR"
           source "$TOP/build/soong/scripts/microfactory.bash"
           soong_build_go rbcrun rbcrun/rbcrun
           test -x out/rbcrun
           echo "rbcrun ready: $(readlink -f out/rbcrun)"
 
-          # TeamWin's Android 14 build_envsetup uses shell-variable assignments
-          # around build_build_var_cache. A variable assignment before a shell
-          # function is not guaranteed to become part of the child process
-          # environment, so put the target variables directly in the environment
-          # of the soong_ui process.
-          # Override only the cache bootstrap function; keep standard lunch logic.
           build_build_var_cache() {
             local T=$(gettop)
             cached_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
