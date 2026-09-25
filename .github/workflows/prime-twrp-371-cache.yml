@@ -1,0 +1,149 @@
+name: Prime TWRP 3.7.1 Repo Cache
+
+on:
+  workflow_dispatch:
+
+jobs:
+  prime-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Cleanup runner
+        uses: rokibhasansagar/slimhub_actions@main
+        continue-on-error: true
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        continue-on-error: true
+        with:
+          root-reserve-mb: 2048
+          temp-reserve-mb: 128
+          swap-size-mb: 1024
+          remove-dotnet: 'false'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'false'
+
+      - name: Install repo
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo > "$HOME/bin/repo"
+          chmod a+x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Restore existing TWRP repo cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/twrp371/.repo
+          key: twrp-14-repo-v2-${{ runner.os }}
+          restore-keys: |
+            twrp-14-repo-v2-
+
+      - name: Sync TWRP 3.7.1 source
+        run: |
+          set -uo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          mkdir -p "$TWRP_DIR"
+          cd "$TWRP_DIR"
+
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-14 --depth=1 --partial-clone --clone-filter=blob:none
+
+          mkdir -p .repo/local_manifests
+          curl -fsSL https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml -o .repo/local_manifests/remove-minimal.xml
+          test -s .repo/local_manifests/remove-minimal.xml
+
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.repo/local_manifests/remove-minimal.xml')
+          s = p.read_text()
+          s = s.replace('<remove-project ', '<remove-project optional="true" ')
+          s = s.replace('<remove-project optional="true" optional="true" ', '<remove-project optional="true" ')
+          p.write_text(s)
+          PY
+
+          echo '=== Syncing TWRP source ==='
+          set -x
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee repo-sync.log
+          sync_rc=${PIPESTATUS[0]}
+          set +x
+          echo "repo sync exit code: ${sync_rc}"
+          df -h "$GITHUB_WORKSPACE"
+          du -sh .repo 2>/dev/null || true
+          exit "$sync_rc"
+
+      - name: Prepare 9.5 GB TWRP repo cache
+        if: success()
+        run: |
+          set -euo pipefail
+          export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
+          export CACHE_DIR="$GITHUB_WORKSPACE/twrp371-cache/.repo"
+          LIMIT=$((9500 * 1024 * 1024))
+
+          rm -rf "$GITHUB_WORKSPACE/twrp371-cache"
+          mkdir -p "$CACHE_DIR"
+
+          echo '=== Copying .repo to cache staging area ==='
+          rsync -a --exclude='*.log' --exclude='*.tmp' "$TWRP_DIR/.repo/" "$CACHE_DIR/"
+
+          size=$(du -sb "$CACHE_DIR" | cut -f1)
+          echo "Initial cache size: $size bytes"
+
+          # Find the largest complete Git pack pair without using sort/head on
+          # the entire file list. The previous implementation could terminate
+          # early with SIGPIPE and accidentally leave the cache at ~14 GB.
+          while [ "$size" -gt "$LIMIT" ]; do
+            candidate=$(python3 - "$CACHE_DIR" <<'PY'
+          import os
+          import sys
+          root = sys.argv[1]
+          best = None
+          best_size = -1
+          for base, _, files in os.walk(root):
+              for name in files:
+                  if not name.endswith('.pack'):
+                      continue
+                  pack = os.path.join(base, name)
+                  idx = pack[:-5] + '.idx'
+                  try:
+                      psize = os.path.getsize(pack)
+                  except OSError:
+                      continue
+                  if os.path.exists(idx) and psize > best_size:
+                      best = pack
+                      best_size = psize
+          print(best or '')
+          PY
+            )
+
+            if [ -z "$candidate" ]; then
+              echo 'No complete pack/index pair remains to remove.'
+              break
+            fi
+
+            idx="${candidate%.pack}.idx"
+            echo "Dropping largest complete pack pair:"
+            echo "  $candidate"
+            echo "  $idx"
+            rm -f "$candidate" "$idx"
+            size=$(du -sb "$CACHE_DIR" | cut -f1)
+            echo "Cache size now: $size bytes"
+          done
+
+          final_size=$(du -sb "$CACHE_DIR" | cut -f1)
+          echo "Final cache size: $final_size bytes"
+          if [ "$final_size" -gt "$LIMIT" ]; then
+            echo 'ERROR: cache staging area is still above 9.5 GiB.'
+            exit 1
+          fi
+
+          du -sh "$CACHE_DIR"
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Save TWRP repo metadata cache
+        if: success()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/twrp371-cache/.repo
+          key: twrp-14-repo-v2-${{ runner.os }}
