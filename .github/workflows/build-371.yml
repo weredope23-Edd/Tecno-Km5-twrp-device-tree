@@ -68,14 +68,6 @@ jobs:
           chmod a+x "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Restore TWRP repo metadata cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ github.workspace }}/twrp371/.repo
-          key: twrp-14-repo-v1-${{ runner.os }}
-          restore-keys: |
-            twrp-14-repo-v1-
-
       - name: Sync TWRP 3.7.1 source
         run: |
           set -uo pipefail
@@ -84,7 +76,6 @@ jobs:
           cd "$TWRP_DIR"
 
           repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-14 --depth=1 --partial-clone --clone-filter=blob:none
-
           mkdir -p .repo/local_manifests
           curl -fsSL https://raw.githubusercontent.com/minimal-manifest-twrp/platform_manifest_twrp_aosp/twrp-14/remove-minimal.xml -o .repo/local_manifests/remove-minimal.xml
           test -s .repo/local_manifests/remove-minimal.xml
@@ -104,41 +95,42 @@ jobs:
           wc -l .repo/local_manifests/remove-minimal.xml
           df -h "$GITHUB_WORKSPACE"
 
-          set -x
-          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune --fail-fast 2>&1 | tee repo-sync.log
-          sync_rc=${PIPESTATUS[0]}
-          set +x
+          # A failed work-tree checkout is recoverable. Run repo sync again
+          # without fail-fast so a transient checkout failure does not throw
+          # away an otherwise completed multi-hour sync.
+          sync_rc=1
+          for attempt in 1 2 3; do
+            echo "=== repo sync attempt ${attempt}/3 ==="
+            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee -a repo-sync.log
+            sync_rc=${PIPESTATUS[0]}
+            if [ "$sync_rc" -eq 0 ]; then
+              break
+            fi
+            echo "repo sync attempt ${attempt} failed with ${sync_rc}; retrying"
+            df -h "$GITHUB_WORKSPACE"
+            sleep 5
+          done
 
-          echo "repo sync exit code: ${sync_rc}"
+          echo "repo sync final exit code: ${sync_rc}"
           df -h "$GITHUB_WORKSPACE"
           du -sh .repo 2>/dev/null || true
           du -sh -- */ 2>/dev/null | sort -h | tail -30 || true
           exit "$sync_rc"
-
-      - name: Save TWRP repo metadata cache
-        if: success()
-        continue-on-error: true
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ github.workspace }}/twrp371/.repo
-          key: twrp-14-repo-v1-${{ runner.os }}
 
       - name: Inject AOSP release-config snapshot
         run: |
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
           cd "$TWRP_DIR"
-
           rm -rf build/release
           mkdir -p build/release
-          curl -fsSL "https://android.googlesource.com/platform/build/release/+archive/4ca41ed.tar.gz" -o /tmp/build-release.tar.gz
+          curl -fL --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 300 "https://android.googlesource.com/platform/build/release/+archive/4ca41ed.tar.gz" -o /tmp/build-release.tar.gz
           tar -xzf /tmp/build-release.tar.gz -C build/release
           rm -f /tmp/build-release.tar.gz
-
           test -f build/release/release_config_map.mk
           test -f build/release/build_config/next.scl
           test -f build/release/build_flags.scl
-          echo "AOSP release config snapshot injected: 4ca41ed071b6297019673f446495021726db8eb4"
+          echo "AOSP release config snapshot injected: 4ca41ed071b6297019673f446495021726db8eb54"
 
       - name: Reclaim repo metadata before adding device tree
         run: |
@@ -154,13 +146,10 @@ jobs:
           set -euxo pipefail
           export TWRP_DIR="$GITHUB_WORKSPACE/twrp371"
           mkdir -p "$TWRP_DIR/device/tecno/km5n"
-
           rsync -a --exclude='.git' "$GITHUB_WORKSPACE/device/tecno/km5n/" "$TWRP_DIR/device/tecno/km5n/"
-
           cp -f "$TWRP_DIR/device/tecno/km5n/configs/twrp371/BoardConfig.mk" "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
           cp -f "$TWRP_DIR/device/tecno/km5n/configs/twrp371/device.mk" "$TWRP_DIR/device/tecno/km5n/device.mk"
           cp -f "$TWRP_DIR/device/tecno/km5n/configs/twrp371/twrp_km5n.mk" "$TWRP_DIR/device/tecno/km5n/twrp_km5n.mk"
-
           cat > "$TWRP_DIR/device/tecno/km5n/AndroidProducts.mk" <<'EOF'
           PRODUCT_MAKEFILES := \
               $(LOCAL_DIR)/twrp_km5n.mk
@@ -169,7 +158,6 @@ jobs:
               twrp_km5n-next-eng \
               twrp_km5n-next-userdebug
           EOF
-
           echo '=== Active TWRP 3.7.1 BoardConfig ==='
           grep -E 'BOARD_BOOT_HEADER_VERSION|BOARD_MOVE_RECOVERY|BOARD_INCLUDE_RECOVERY|TW_INCLUDE_FBE|TW_LOAD_VENDOR_BOOT|TW_DEVICE_VERSION' "$TWRP_DIR/device/tecno/km5n/BoardConfig.mk"
           echo '=== Android 14 lunch choices ==='
@@ -178,7 +166,7 @@ jobs:
           test -f "$TWRP_DIR/build/release/release_config_map.mk"
           test -f "$TWRP_DIR/build/release/build_config/next.scl"
           test -f "$TWRP_DIR/build/release/build_flags.scl"
-          echo "AOSP release config revision: 4ca41ed071b6297019673f446495021726db8eb4"
+          echo "AOSP release config revision: 4ca41ed071b6297019673f446495021726db8eb54"
 
       - name: Build TWRP 3.7.1 vendor_boot
         run: |
@@ -189,18 +177,13 @@ jobs:
           export LC_ALL=C
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
-
           echo '=== Disk before build ==='
           df -h "$GITHUB_WORKSPACE"
-
           echo '=== Release config files visible to Android build ==='
           find device/tecno/km5n/release -maxdepth 2 -type f -print -exec sed -n '1,80p' {} \; 2>/dev/null || true
           echo '=== Release config maps in source ==='
           find device vendor build/release \( -name 'release_config_map.mk' -o -name 'release_config_map.textproto' \) 2>/dev/null | sort | head -100 || true
 
-          # Kati's shell helper can report success without replaying the
-          # rbcrun command in this minimal TWRP tree, leaving the generated
-          # starlark result absent. Force run-starlark to execute normally.
           python3 - <<'PY'
           from pathlib import Path
           envsetup = Path("build/make/core/envsetup.mk")
@@ -213,74 +196,34 @@ jobs:
           PY
 
           source build/envsetup.sh
-
-          # The TeamWin Android 14 build tree expects this SCL helper,
-          # but the minimal TWRP manifest does not sync build/bazel/utils.
-          # release_config.scl loads it while rbcrun evaluates the release
-          # configuration. This file lives in platform/build (not
-          # platform/build/release), so use the platform/build commit that
-          # contains the .bzl -> .scl transition.
           mkdir -p build/bazel/utils
-          curl -fsSL "https://raw.githubusercontent.com/BlissRoms/platform_build_bazel/45fbefff493d861a9f6f41068457bdb89ad932bf/utils/schema_validation.scl" \
-            > build/bazel/utils/schema_validation.scl
+          curl -fsSL "https://raw.githubusercontent.com/BlissRoms/platform_build_bazel/45fbefff493d861a9f6f41068457bdb89ad932bf/utils/schema_validation.scl" > build/bazel/utils/schema_validation.scl
           test -s build/bazel/utils/schema_validation.scl
           echo 'schema_validation.scl restored from AOSP build/bazel mirror: 45fbefff'
 
-          # These must be exported BEFORE bootstrapping rbcrun. The TeamWin
-          # rbcrun bootstrap runs product configuration/dumpvars, which reads
-          # TARGET_RELEASE before the later lunch/cache override is reached.
           export TARGET_PRODUCT=twrp_km5n
           export TARGET_RELEASE=next
           export TARGET_BUILD_VARIANT=eng
           export TARGET_BUILD_APPS=
 
           echo '=== Bootstrap rbcrun directly with microfactory ==='
-          # soong_ui.bash itself bootstraps rbcrun before it executes any
-          # requested mode. Calling soong_ui.bash --make-mode rbcrun therefore
-          # creates a circular bootstrap: its rbcrun build enters product
-          # configuration, which calls rbcrun before the binary exists.
-          # Build rbcrun directly with the same microfactory helper used by
-          # TeamWin's soong_ui.bash, then use the normal soong_ui entrypoint.
           export TOP="$TWRP_DIR"
           source "$TOP/build/soong/scripts/microfactory.bash"
           soong_build_go rbcrun rbcrun/rbcrun
           test -x out/rbcrun
           echo "rbcrun ready: $(readlink -f out/rbcrun)"
 
-          # TeamWin's Android 14 build_envsetup uses shell-variable assignments
-          # around build_build_var_cache. A variable assignment before a shell
-          # function is not guaranteed to become part of the child process
-          # environment, so put the target variables directly in the environment
-          # of the soong_ui process.
-          # Override only the cache bootstrap function; keep standard lunch logic.
           build_build_var_cache() {
             local T=$(gettop)
             cached_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
             cached_abs_vars=(`cat "$T/build/envsetup.sh" | tr '()' ' ' | awk '{for(i=1;i<=NF;i++) if($i~/_get_abs_build_var_cached/) print $(i+1)}' | sort -u | tr '\\n' ' '`)
-
-            build_dicts_script=`builtin cd "$T"; env \
-              TARGET_PRODUCT="$TARGET_PRODUCT" \
-              TARGET_RELEASE="$TARGET_RELEASE" \
-              TARGET_BUILD_VARIANT="$TARGET_BUILD_VARIANT" \
-              TARGET_BUILD_APPS="$TARGET_BUILD_APPS" \
-              build/soong/soong_ui.bash --dumpvars-mode \
-              --vars="${cached_vars[*]}" \
-              --abs-vars="${cached_abs_vars[*]}" \
-              --var-prefix=var_cache_ \
-              --abs-var-prefix=abs_var_cache_`
+            build_dicts_script=`builtin cd "$T"; env TARGET_PRODUCT="$TARGET_PRODUCT" TARGET_RELEASE="$TARGET_RELEASE" TARGET_BUILD_VARIANT="$TARGET_BUILD_VARIANT" TARGET_BUILD_APPS="$TARGET_BUILD_APPS" build/soong/soong_ui.bash --dumpvars-mode --vars="${cached_vars[*]}" --abs-vars="${cached_abs_vars[*]}" --var-prefix=var_cache_ --abs-var-prefix=abs_var_cache_`
             local ret=$?
-            if [ $ret -ne 0 ]; then
-              unset build_dicts_script
-              return $ret
-            fi
-
+            if [ $ret -ne 0 ]; then unset build_dicts_script; return $ret; fi
             eval "$build_dicts_script"
             ret=$?
             unset build_dicts_script
-            if [ $ret -ne 0 ]; then
-              return $ret
-            fi
-
+            if [ $ret -ne 0 ]; then return $ret; fi
             test "$var_cache_TARGET_PRODUCT" = twrp_km5n
             test "$var_cache_TARGET_RELEASE" = next
             test "$var_cache_TARGET_BUILD_VARIANT" = eng
@@ -289,15 +232,12 @@ jobs:
 
           echo '=== Lunch with explicit Android 14 target ==='
           lunch twrp_km5n-next-eng
-
           echo '=== Selected build variables ==='
           get_build_var TARGET_PRODUCT
           get_build_var TARGET_RELEASE
           get_build_var TARGET_BUILD_VARIANT
           get_build_var PRODUCT_RELEASE_CONFIG_MAPS
-
           mka vendorbootimage -j2
-
           test -s out/target/product/km5n/vendor_boot.img
           stat -c '%n %s bytes' out/target/product/km5n/vendor_boot.img
           bash device/tecno/km5n/scripts/validate_vendor_boot.sh out/target/product/km5n/vendor_boot.img
@@ -316,7 +256,7 @@ jobs:
           cp -f out/soong/build.ninja build-debug/ 2>/dev/null || true
           cp -f out/verbose.log.gz build-debug/ 2>/dev/null || true
           cp -f out/soong/release-config.out build-debug/ 2>/dev/null || true
-          find out/soong/release-config -maxdepth 2 -type f -print -exec sh -c 'echo "--- $1"; sed -n '1,160p' "$1"' _ {} \; > build-debug/release-config.txt 2>/dev/null || true
+          find out/soong/release-config -maxdepth 2 -type f -print -exec sh -c 'echo "--- $1"; sed -n '"'"'1,160p'"'"' "$1"' _ {} \; > build-debug/release-config.txt 2>/dev/null || true
           df -h "$GITHUB_WORKSPACE" > build-debug/disk.txt 2>&1 || true
           du -sh "$TWRP_DIR"/* 2>/dev/null | sort -h > build-debug/top-level-disk.txt || true
 
