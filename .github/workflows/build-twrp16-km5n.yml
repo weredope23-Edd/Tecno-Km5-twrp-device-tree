@@ -28,7 +28,7 @@ jobs:
     env:
       TWRP_MANIFEST_URL: https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git
       TWRP_MANIFEST_BRANCH: twrp-16.0
-      TWRP_DIR: $GITHUB_WORKSPACE/twrp16
+      TWRP_DIR: ${{ github.workspace }}/twrp16
       DEVICE_PATH: device/tecno/km5n
       LUNCH_TARGET: twrp_km5n-eng
       BUILD_TARGET: vendorbootimage
