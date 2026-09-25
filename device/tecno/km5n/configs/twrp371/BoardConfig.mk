@@ -37,6 +37,10 @@ BOARD_USES_METADATA_PARTITION := true
 BOARD_HAS_LARGE_FILESYSTEM := true
 BOARD_SUPPRESS_SECURE_ERASE := true
 
+# The TWRP Android 14/next build tree resolves the product shipping API to
+# 35. Keep the System SDK declaration compatible with that build target.
+BOARD_SYSTEMSDK_VERSIONS := 35
+
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 TARGET_RECOVERY_PIXEL_FORMAT := RGBX_8888
 TARGET_SCREEN_WIDTH := 720
