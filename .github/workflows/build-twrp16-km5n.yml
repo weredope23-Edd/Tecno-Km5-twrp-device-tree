@@ -1,0 +1,311 @@
+name: Build TWRP KM5n (16.0 / Android 15)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_jobs:
+        description: "Parallel build jobs (1-4). Use 2 for the safest memory profile."
+        required: true
+        default: "2"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: km5n-twrp16-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      TWRP_MANIFEST_URL: https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git
+      TWRP_MANIFEST_BRANCH: twrp-16.0
+      TWRP_DIR: $GITHUB_WORKSPACE/twrp16
+      DEVICE_PATH: device/tecno/km5n
+      LUNCH_TARGET: twrp_km5n-eng
+      BUILD_TARGET: vendorbootimage
+      BUILD_JOBS: ${{ inputs.build_jobs }}
+
+    steps:
+      - name: Checkout device tree
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Expand build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 2048
+          temp-reserve-mb: 128
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-codeql: 'true'
+          remove-haskell: 'true'
+          remove-docker-images: 'true'
+
+      - name: Verify runner capacity
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet /usr/local/share/powershell /opt/ghc 2>/dev/null || true
+          sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/* /var/tmp/* 2>/dev/null || true
+          df -h /
+          df -h "$GITHUB_WORKSPACE"
+          free -h
+          echo "CPUs: $(nproc)"
+          avail=$(df --output=avail "$GITHUB_WORKSPACE" | tail -1 | tr -d ' ')
+          test "$avail" -ge 90000000
+
+      - name: Install build dependencies
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          for attempt in 1 2 3; do
+            if sudo apt-get update; then break; fi
+            sleep 5
+          done
+          sudo apt-get install -y --no-install-recommends             openjdk-17-jdk-headless bc bison build-essential curl flex             g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick             lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev             libssl-dev libxml2-utils lzop pngcrush python3 python3-pip             python3-setuptools rsync unzip xsltproc zip zlib1g-dev
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          java -version
+          python3 --version
+          git --version
+
+      - name: Install repo tool
+        run: |
+          set -euxo pipefail
+          mkdir -p "$HOME/bin"
+          curl -fsSL --retry 8 --retry-all-errors --retry-delay 3             https://storage.googleapis.com/git-repo-downloads/repo             -o "$HOME/bin/repo"
+          chmod 0755 "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          "$HOME/bin/repo" version
+
+      - name: Record device tree revision
+        run: |
+          set -euxo pipefail
+          git rev-parse HEAD
+          find "$DEVICE_PATH" -maxdepth 2 -type f | sort
+
+      - name: Initialize TWRP 16.0 source
+        run: |
+          set -euxo pipefail
+          rm -rf "$TWRP_DIR"
+          mkdir -p "$TWRP_DIR"
+          cd "$TWRP_DIR"
+          repo init --depth=1 -u "$TWRP_MANIFEST_URL" -b "$TWRP_MANIFEST_BRANCH"
+          test -s .repo/manifest.xml
+          repo version
+          head -60 .repo/manifest.xml
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Sync TWRP 16.0 source
+        run: |
+          set -o pipefail
+          cd "$TWRP_DIR"
+          : > repo-sync.log
+          rc=1
+          for attempt in 1 2 3; do
+            echo "=== repo sync attempt $attempt/3 ===" | tee -a repo-sync.log
+            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags               --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee -a repo-sync.log
+            rc=$?
+            if [ "$rc" -eq 0 ]; then break; fi
+            df -h "$GITHUB_WORKSPACE" | tee -a repo-sync.log
+            sleep 10
+          done
+          echo "repo sync final exit code: $rc" | tee -a repo-sync.log
+          df -h "$GITHUB_WORKSPACE" | tee -a repo-sync.log
+          du -sh .repo 2>/dev/null | tee -a repo-sync.log || true
+          exit "$rc"
+
+      - name: Verify source
+        run: |
+          set -euxo pipefail
+          cd "$TWRP_DIR"
+          test -d bootable/recovery
+          test -f build/envsetup.sh
+          test -d build/make
+          test -d build/soong
+          repo manifest -r > manifest-revisions.xml
+          echo "recovery: $(git -C bootable/recovery rev-parse HEAD)"
+          echo "build/make: $(git -C build/make rev-parse HEAD)"
+          echo "build/soong: $(git -C build/soong rev-parse HEAD)"
+          du -sh "$TWRP_DIR" "$TWRP_DIR/.repo"
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Install authoritative KM5n tree
+        run: |
+          set -euxo pipefail
+          cd "$TWRP_DIR"
+          rm -rf "$DEVICE_PATH"
+          mkdir -p "$(dirname "$DEVICE_PATH")"
+          rsync -a --delete --exclude='.git' "$GITHUB_WORKSPACE/$DEVICE_PATH/" "$DEVICE_PATH/"
+          test -f "$DEVICE_PATH/BoardConfig.mk"
+          test -f "$DEVICE_PATH/AndroidProducts.mk"
+          test -f "$DEVICE_PATH/device.mk"
+          test -f "$DEVICE_PATH/twrp_km5n.mk"
+
+      - name: Preflight KM5n configuration
+        run: |
+          set -euxo pipefail
+          cd "$TWRP_DIR"
+          if grep -RInE 'twrp371|twrp-14|TARGET_RELEASE[[:space:]]*[:?+]?=[[:space:]]*next|twrp_km5n-next|configs/twrp371' "$DEVICE_PATH"             --include='*.mk' --include='*.bp' --include='*.xml' --include='*.rc'; then
+            echo "ERROR: legacy TWRP 3.7.1/TWRP-14 configuration is active"
+            exit 1
+          fi
+          grep -q '^BOARD_BOOT_HEADER_VERSION[[:space:]]*:=[[:space:]]*4' "$DEVICE_PATH/BoardConfig.mk"
+          grep -q '^BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
+          grep -q '^BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
+          grep -q '^TARGET_NO_RECOVERY[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
+          grep -q '^BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE[[:space:]]*:=[[:space:]]*67108864' "$DEVICE_PATH/BoardConfig.mk"
+          grep -q '^PRODUCT_SHIPPING_API_LEVEL[[:space:]]*:=[[:space:]]*35' "$DEVICE_PATH/device.mk"
+          grep -q 'twrp_km5n-eng' "$DEVICE_PATH/AndroidProducts.mk"
+          echo "PASS: authoritative Android 15/API 35 vendor_boot-v4 configuration"
+
+      - name: Lunch and compatibility preflight
+        run: |
+          set -o pipefail
+          cd "$TWRP_DIR"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          export TMPDIR="$TWRP_DIR/tmp"
+          mkdir -p "$TMPDIR"
+          source build/envsetup.sh
+          lunch "$LUNCH_TARGET" 2>&1 | tee "$GITHUB_WORKSPACE/lunch.log"
+          {
+            echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
+            echo "TARGET_DEVICE=$(get_build_var TARGET_DEVICE)"
+            echo "TARGET_BUILD_VARIANT=$(get_build_var TARGET_BUILD_VARIANT)"
+            echo "TARGET_RELEASE=$(get_build_var TARGET_RELEASE)"
+            echo "PLATFORM_VERSION=$(get_build_var PLATFORM_VERSION)"
+            echo "PRODUCT_SHIPPING_API_LEVEL=$(get_build_var PRODUCT_SHIPPING_API_LEVEL)"
+            echo "BOARD_SYSTEMSDK_VERSIONS=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)"
+            echo "BOARD_BOOT_HEADER_VERSION=$(get_build_var BOARD_BOOT_HEADER_VERSION)"
+            echo "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE=$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)"
+            echo "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=$(get_build_var BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)"
+            echo "BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT=$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)"
+            echo "TARGET_NO_RECOVERY=$(get_build_var TARGET_NO_RECOVERY)"
+          } | tee "$GITHUB_WORKSPACE/build-vars.log"
+          test "$(get_build_var TARGET_PRODUCT)" = twrp_km5n
+          test "$(get_build_var TARGET_DEVICE)" = km5n
+          test "$(get_build_var TARGET_BUILD_VARIANT)" = eng
+          test "$(get_build_var PRODUCT_SHIPPING_API_LEVEL)" = 35
+          test "$(get_build_var BOARD_BOOT_HEADER_VERSION)" = 4
+          test "$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)" = 67108864
+          test "$(get_build_var BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)" = true
+          test "$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)" = true
+          test "$(get_build_var TARGET_NO_RECOVERY)" = true
+          sdk=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)
+          for v in $(printf '%s\n' "$sdk" | grep -oE '[0-9]+' || true); do
+            test "$v" -ge 35 || { echo "ERROR: SDK version $v is below API 35"; exit 1; }
+          done
+          echo "PASS: build-system compatibility preflight"
+
+      - name: Build KM5n vendor_boot
+        id: build
+        run: |
+          set -o pipefail
+          cd "$TWRP_DIR"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          export TMPDIR="$TWRP_DIR/tmp"
+          mkdir -p "$TMPDIR"
+          source build/envsetup.sh
+          lunch "$LUNCH_TARGET" >/dev/null
+          echo "Build start: $(date -u)"
+          df -h "$GITHUB_WORKSPACE"
+          free -h
+          mka adbd "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/twrp-build.log"
+          rc=$?
+          echo "mka exit code: $rc"
+          echo "Build end: $(date -u)"
+          exit "$rc"
+
+      - name: Validate vendor_boot
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euxo pipefail
+          cd "$TWRP_DIR"
+          IMG="out/target/product/km5n/vendor_boot.img"
+          test -s "$IMG"
+          stat -c '%n %s bytes' "$IMG"
+          bash "$DEVICE_PATH/scripts/validate_vendor_boot.sh" "$IMG"
+          python3 - "$IMG" <<'PY'
+          import struct, sys
+          d = open(sys.argv[1], "rb").read()
+          assert d[:8] == b"VNDRBOOT", "bad vendor_boot magic"
+          version, page = struct.unpack_from("<II", d, 8)
+          assert version == 4, f"expected header v4, got {version}"
+          assert page == 4096, f"expected page 4096, got {page}"
+          assert len(d) <= 67108864, "vendor_boot exceeds 64 MiB"
+          print("PASS: vendor_boot v4 structure and partition-size checks")
+          PY
+          bash "$DEVICE_PATH/scripts/audit_twrp_output.sh" "out/target/product/km5n"
+
+      - name: Collect diagnostics
+        if: always()
+        run: |
+          set +e
+          mkdir -p "$GITHUB_WORKSPACE/diagnostics"
+          cd "$TWRP_DIR" 2>/dev/null || exit 0
+          repo manifest -r > "$GITHUB_WORKSPACE/diagnostics/manifest-revisions.xml" 2>&1
+          repo status > "$GITHUB_WORKSPACE/diagnostics/repo-status.txt" 2>&1
+          {
+            echo "UTC: $(date -u)"
+            uname -a
+            nproc
+            free -h
+            df -h "$GITHUB_WORKSPACE"
+            du -sh "$TWRP_DIR" "$TWRP_DIR/.repo" 2>/dev/null
+          } > "$GITHUB_WORKSPACE/diagnostics/runner.txt" 2>&1
+          cp "$GITHUB_WORKSPACE/repo-sync.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/lunch.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/build-vars.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/twrp-build.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
+          if [ -f "$GITHUB_WORKSPACE/twrp-build.log" ]; then
+            grep -E '(^| )(error:|ERROR|FAILED|fatal:|ninja:|No rule to make target|undefined reference|ld.lld:|Killed|No space left|out of memory)'               "$GITHUB_WORKSPACE/twrp-build.log" | tail -250               > "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" || true
+          fi
+          echo "=== error summary ==="
+          cat "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" 2>/dev/null || true
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-diagnostics-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: ignore
+          retention-days: 3
+          compression-level: 6
+
+      - name: Upload vendor_boot
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-vendor-boot-${{ github.run_id }}
+          path: twrp16/out/target/product/km5n/vendor_boot.img
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
+
+      - name: Final summary
+        if: always()
+        run: |
+          {
+            echo "## KM5n TWRP 16.0"
+            echo ""
+            echo "- Manifest: $TWRP_MANIFEST_URL"
+            echo "- Branch: $TWRP_MANIFEST_BRANCH"
+            echo "- Lunch: $LUNCH_TARGET"
+            echo "- Target: $BUILD_TARGET"
+            echo "- Jobs: $BUILD_JOBS"
+            echo "- Device-tree commit: $(git rev-parse HEAD)"
+          } >> "$GITHUB_STEP_SUMMARY"
