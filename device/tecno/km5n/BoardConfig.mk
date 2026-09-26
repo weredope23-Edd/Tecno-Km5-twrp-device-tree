@@ -17,9 +17,12 @@ BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true
 BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT := true
 TARGET_NO_RECOVERY := true
 
-# Android 15/TWRP 16 builds a vendor image as part of the recovery
-# configuration, so the vendor output must use the standard vendor path.
+# Android 15/TWRP 16 builds dynamic logical partitions using the standard
+# Android output-directory names.
 TARGET_COPY_OUT_VENDOR := vendor
+TARGET_COPY_OUT_PRODUCT := product
+TARGET_COPY_OUT_SYSTEM_EXT := system_ext
+TARGET_COPY_OUT_ODM := odm
 
 BOARD_BOOTIMAGE_PARTITION_SIZE := 67108864
 BOARD_DTBOIMG_PARTITION_SIZE := 8388608
