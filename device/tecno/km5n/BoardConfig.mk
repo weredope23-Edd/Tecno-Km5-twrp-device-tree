@@ -60,8 +60,11 @@ BOARD_VENDOR_DLKMIMAGE_PARTITION_SIZE := 13807616
 # Android convention: kernel page size * 64, not the 4 KiB page size itself.
 BOARD_FLASH_BLOCK_SIZE := 262144
 
-# The stock KM5n vendor is API 35.
-BOARD_SYSTEMSDK_VERSIONS := 35
+# Do not pin BOARD_SYSTEMSDK_VERSIONS here.  PRODUCT_SHIPPING_API_LEVEL=35
+# describes the device/vendor interface level, while TWRP 16 itself is an
+# Android 16 platform and must retain its current system SDK (system_current).
+# Android build/make supplies the appropriate board System SDK automatically
+# when this variable is unset.
 
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 TARGET_RECOVERY_PIXEL_FORMAT := RGBX_8888
