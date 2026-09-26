@@ -1,6 +1,6 @@
 LOCAL_PATH := device/tecno/km5n
 
-# Android 14-based TWRP source for a device whose shipped vendor is API 35.
+# Android 15 / API 35 device configuration for TWRP 16.0.
 $(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota/launch_with_vendor_ramdisk.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota/compression.mk)
 
