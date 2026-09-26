@@ -34,13 +34,16 @@ BOARD_USES_METADATA_PARTITION := true
 BOARD_HAS_LARGE_FILESYSTEM := true
 BOARD_SUPPRESS_SECURE_ERASE := true
 
+# The stock KM5n vendor is API 35; keep the build SDK declaration compatible.
+BOARD_SYSTEMSDK_VERSIONS := 35
+
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 TARGET_RECOVERY_PIXEL_FORMAT := RGBX_8888
 TARGET_SCREEN_WIDTH := 720
 TARGET_SCREEN_HEIGHT := 1600
 TARGET_SCREEN_DENSITY := 280
 TW_THEME := portrait_hdpi
-TW_DEVICE_VERSION := KM5n-TWRP-14-MT6768
+TW_DEVICE_VERSION := KM5n-TWRP-16-MT6768
 
 # FBE metadata encryption is retained; Trustonic/keymaster services are
 # supplied by the stock vendor partition at runtime.
