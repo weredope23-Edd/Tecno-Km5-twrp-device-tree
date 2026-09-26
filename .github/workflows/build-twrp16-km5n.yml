@@ -174,7 +174,7 @@ jobs:
 
       - name: Lunch and compatibility preflight
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd "$TWRP_DIR"
           export ALLOW_MISSING_DEPENDENCIES=true
           export TARGET_RELEASE=bp2a
@@ -227,7 +227,7 @@ jobs:
       - name: Build KM5n vendor_boot
         id: build
         run: |
-          set -euo pipefail
+          set -eo pipefail
           cd "$TWRP_DIR"
           export ALLOW_MISSING_DEPENDENCIES=true
           export TARGET_RELEASE=bp2a
