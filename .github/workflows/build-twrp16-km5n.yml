@@ -186,7 +186,10 @@ jobs:
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
           source build/envsetup.sh
-          lunch "$LUNCH_TARGET" 2>&1 | tee "$GITHUB_WORKSPACE/lunch.log"
+          lunch "$LUNCH_TARGET" > "$GITHUB_WORKSPACE/lunch.log" 2>&1
+          lunch_rc=$?
+          cat "$GITHUB_WORKSPACE/lunch.log"
+          test "$lunch_rc" -eq 0
           {
             echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
             echo "TARGET_DEVICE=$(get_build_var TARGET_DEVICE)"
