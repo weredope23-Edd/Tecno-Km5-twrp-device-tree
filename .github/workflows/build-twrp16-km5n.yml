@@ -35,9 +35,6 @@ jobs:
       BUILD_JOBS: ${{ inputs.build_jobs || '2' }}
 
     steps:
-      # IMPORTANT: maximize-build-space must run before checkout. It mounts a
-      # larger filesystem over GITHUB_WORKSPACE; checking out first would hide
-      # the checked-out device tree behind that mount.
       - name: Expand build space
         uses: easimon/maximize-build-space@master
         with:
@@ -53,9 +50,6 @@ jobs:
       - name: Checkout device tree
         uses: actions/checkout@v7
         with:
-          # Pin the source tree to the exact commit that contains the
-          # workflow being executed. This prevents a workflow file from one
-          # commit accidentally building the device tree from another.
           ref: ${{ github.workflow_sha }}
           fetch-depth: 1
 
@@ -181,6 +175,7 @@ jobs:
           grep -q '^BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
           grep -q '^BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
           grep -q '^TARGET_NO_RECOVERY[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
+          grep -q '^TARGET_COPY_OUT_VENDOR[[:space:]]*:=[[:space:]]*vendor' "$DEVICE_PATH/BoardConfig.mk"
           grep -q '^BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE[[:space:]]*:=[[:space:]]*67108864' "$DEVICE_PATH/BoardConfig.mk"
           grep -q '^PRODUCT_SHIPPING_API_LEVEL[[:space:]]*:=[[:space:]]*35' "$DEVICE_PATH/device.mk"
           grep -q 'twrp_km5n-bp2a-eng' "$DEVICE_PATH/AndroidProducts.mk"
@@ -206,6 +201,7 @@ jobs:
             echo "BOARD_SYSTEMSDK_VERSIONS=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)"
             echo "BOARD_BOOT_HEADER_VERSION=$(get_build_var BOARD_BOOT_HEADER_VERSION)"
             echo "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE=$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)"
+            echo "TARGET_COPY_OUT_VENDOR=$(get_build_var TARGET_COPY_OUT_VENDOR)"
             echo "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=$(get_build_var BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)"
             echo "BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT=$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)"
             echo "TARGET_NO_RECOVERY=$(get_build_var TARGET_NO_RECOVERY)"
@@ -217,6 +213,7 @@ jobs:
           test "$(get_build_var PRODUCT_SHIPPING_API_LEVEL)" = 35
           test "$(get_build_var BOARD_BOOT_HEADER_VERSION)" = 4
           test "$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)" = 67108864
+          test "$(get_build_var TARGET_COPY_OUT_VENDOR)" = vendor
           test "$(get_build_var BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)" = true
           test "$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)" = true
           test "$(get_build_var TARGET_NO_RECOVERY)" = true
