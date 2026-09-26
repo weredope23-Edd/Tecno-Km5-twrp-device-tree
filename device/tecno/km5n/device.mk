@@ -27,6 +27,11 @@ AB_OTA_PARTITIONS += \
 # Stock vendor API level.
 PRODUCT_SHIPPING_API_LEVEL := 35
 
+# TWRP 16 / Android 16 release configuration.  The KM5n tree uses the
+# BP2A release; defining it in the product makes the resolved build
+# configuration agree with the twrp_km5n-bp2a-eng lunch target.
+TARGET_RELEASE := bp2a
+
 # TWRP/Android recovery-side packages that are present in the minimal
 # TWRP/AOSP source.  Do not list MTK proprietary modules here: the minimal
 # manifest does not provide their source definitions.  Stock MTK services
