@@ -30,7 +30,7 @@ jobs:
       TWRP_MANIFEST_BRANCH: twrp-16.0
       TWRP_DIR: ${{ github.workspace }}/twrp16
       DEVICE_PATH: device/tecno/km5n
-      LUNCH_TARGET: twrp_km5n-eng
+      LUNCH_TARGET: twrp_km5n-bp2a-eng
       BUILD_TARGET: vendorbootimage
       BUILD_JOBS: ${{ inputs.build_jobs || '2' }}
 
@@ -183,7 +183,7 @@ jobs:
           grep -q '^TARGET_NO_RECOVERY[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
           grep -q '^BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE[[:space:]]*:=[[:space:]]*67108864' "$DEVICE_PATH/BoardConfig.mk"
           grep -q '^PRODUCT_SHIPPING_API_LEVEL[[:space:]]*:=[[:space:]]*35' "$DEVICE_PATH/device.mk"
-          grep -q 'twrp_km5n-eng' "$DEVICE_PATH/AndroidProducts.mk"
+          grep -q 'twrp_km5n-bp2a-eng' "$DEVICE_PATH/AndroidProducts.mk"
           echo "PASS: authoritative Android 15/API 35 vendor_boot-v4 configuration"
 
       - name: Lunch and compatibility preflight
@@ -213,6 +213,7 @@ jobs:
           test "$(get_build_var TARGET_PRODUCT)" = twrp_km5n
           test "$(get_build_var TARGET_DEVICE)" = km5n
           test "$(get_build_var TARGET_BUILD_VARIANT)" = eng
+          test "$(get_build_var TARGET_RELEASE)" = bp2a
           test "$(get_build_var PRODUCT_SHIPPING_API_LEVEL)" = 35
           test "$(get_build_var BOARD_BOOT_HEADER_VERSION)" = 4
           test "$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)" = 67108864
