@@ -44,8 +44,8 @@ BOARD_SYSTEM_DLKMIMAGE_FILE_SYSTEM_TYPE := erofs
 BOARD_VENDOR_DLKMIMAGE_FILE_SYSTEM_TYPE := erofs
 BOARD_ODM_DLKMIMAGE_FILE_SYSTEM_TYPE := erofs
 
-# The stock device uses dynamic logical partitions and metadata/F2FS data.
-PRODUCT_USE_DYNAMIC_PARTITIONS := true
+# Dynamic partitions are a product-level property; Android 15 makes this
+# variable readonly during BoardConfig evaluation, so it belongs in device.mk.
 BOARD_USES_METADATA_PARTITION := true
 TARGET_USERIMAGES_USE_F2FS := true
 BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := f2fs
