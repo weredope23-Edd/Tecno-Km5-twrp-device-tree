@@ -25,6 +25,15 @@ if grep -q '^PRODUCT_USE_DYNAMIC_PARTITIONS[[:space:]]*:=' "$BC"; then
 fi
 grep -q '^PRODUCT_USE_DYNAMIC_PARTITIONS := true$' "$DM" || fail "dynamic partitions are not enabled at product level"
 
+# TWRP 16 is an Android 16 platform.  The device's shipping/vendor API is
+# 35, but BOARD_SYSTEMSDK_VERSIONS must not be pinned to 35: that would hide
+# Android 16's current system SDK from platform modules that use system_current.
+# build/make derives the appropriate current board System SDK automatically
+# when the board variable is unset.
+if grep -q '^BOARD_SYSTEMSDK_VERSIONS[[:space:]]*:=' "$BC"; then
+  fail "BOARD_SYSTEMSDK_VERSIONS must remain unset for the TWRP 16 platform"
+fi
+
 grep -q '^BOARD_BOOT_HEADER_VERSION := 4$' "$BC" || fail "boot header is not v4"
 grep -q '^BOARD_KERNEL_PAGESIZE := 4096$' "$BC" || fail "kernel page size is not 4096"
 grep -q '^BOARD_RAMDISK_USE_LZ4 := true$' "$BC" || fail "vendor ramdisk compression is not LZ4"
@@ -68,7 +77,7 @@ test -f "$DEVICE_PATH/stock_vendor_overlay/vendor/bin/hw/android.hardware.securi
 test -f "$DEVICE_PATH/stock_vendor_overlay/vendor/bin/hw/android.hardware.gatekeeper-service.trustonic" || fail "Trustonic Gatekeeper overlay missing"
 
 echo "PASS: KM5n TWRP 16 compatibility audit"
-echo "  Android/API: 15/35"
+echo "  Android platform/API: 16/36 (device shipping API 35)"
 echo "  release: BP2A"
 echo "  boot: vendor_boot v4, 64 MiB, 4 KiB pages, LZ4 ramdisk"
 echo "  logical partitions: EROFS + dynamic partitions"
