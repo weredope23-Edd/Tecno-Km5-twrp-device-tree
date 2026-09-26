@@ -88,12 +88,7 @@ jobs:
             if sudo apt-get update; then break; fi
             sleep 5
           done
-          sudo apt-get install -y --no-install-recommends \
-            openjdk-17-jdk-headless bc bison build-essential curl flex \
-            g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick \
-            lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev \
-            libssl-dev libxml2-utils lzop pngcrush python3 python3-pip \
-            python3-setuptools rsync unzip xsltproc zip zlib1g-dev
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           java -version
@@ -104,8 +99,7 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p "$HOME/bin"
-          curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 \
-            https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
           chmod 0755 "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
           "$HOME/bin/repo" version
@@ -129,8 +123,7 @@ jobs:
           rc=1
           for attempt in 1 2 3; do
             echo "=== repo sync attempt $attempt/3 ===" | tee -a repo-sync.log
-            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags \
-              --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee -a repo-sync.log
+            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee -a repo-sync.log
             rc=${PIPESTATUS[0]}
             if [ "$rc" -eq 0 ]; then break; fi
             df -h "$GITHUB_WORKSPACE" | tee -a repo-sync.log
@@ -182,20 +175,13 @@ jobs:
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
           source build/envsetup.sh
-
-          # Do not let bash -e hide the actual lunch diagnostic. A failed lunch
-          # must be captured, printed, and archived before we stop the job.
           set +e
           lunch "$LUNCH_TARGET" > "$GITHUB_WORKSPACE/lunch.log" 2>&1
           lunch_rc=$?
           set -e
           cat "$GITHUB_WORKSPACE/lunch.log"
           echo "lunch exit code: $lunch_rc"
-          if [ "$lunch_rc" -ne 0 ]; then
-            echo "ERROR: lunch failed; see lunch.log for the complete diagnostic."
-            exit "$lunch_rc"
-          fi
-
+          if [ "$lunch_rc" -ne 0 ]; then echo "ERROR: lunch failed; see lunch.log for the complete diagnostic."; exit "$lunch_rc"; fi
           {
             echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
             echo "TARGET_DEVICE=$(get_build_var TARGET_DEVICE)"
@@ -229,9 +215,7 @@ jobs:
           test "$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)" = true
           test "$(get_build_var TARGET_NO_RECOVERY)" = true
           sdk=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)
-          for v in $(printf '%s\n' "$sdk" | grep -oE '[0-9]+' || true); do
-            test "$v" -ge 35 || { echo "ERROR: SDK version $v is below API 35"; exit 1; }
-          done
+          for v in $(printf '%s\n' "$sdk" | grep -oE '[0-9]+' || true); do test "$v" -ge 35 || { echo "ERROR: SDK version $v is below API 35"; exit 1; }; done
           echo "PASS: build-system compatibility preflight"
 
       - name: Build KM5n vendor_boot
@@ -245,12 +229,14 @@ jobs:
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
           source build/envsetup.sh
-          lunch "$LUNCH_TARGET" >/dev/null
+          lunch "$LUNCH_TARGET" > "$GITHUB_WORKSPACE/lunch-build.log" 2>&1
           echo "Build start: $(date -u)"
           df -h "$GITHUB_WORKSPACE"
           free -h
+          set +e
           mka adbd "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/twrp-build.log"
           rc=${PIPESTATUS[0]}
+          set -e
           echo "mka exit code: $rc"
           echo "Build end: $(date -u)"
           exit "$rc"
@@ -294,10 +280,12 @@ jobs:
           } > "$GITHUB_WORKSPACE/diagnostics/runner.txt" 2>&1
           cp "$GITHUB_WORKSPACE/repo-sync.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/lunch.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/lunch-build.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/build-vars.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/twrp-build.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
           if [ -f "$GITHUB_WORKSPACE/twrp-build.log" ]; then
-            grep -E '(^| )(error:|ERROR|FAILED|fatal:|ninja:|No rule to make target|undefined reference|ld.lld:|Killed|No space left|out of memory)' "$GITHUB_WORKSPACE/twrp-build.log" | tail -250 > "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" || true
+            grep -E '(^| )(error:|ERROR|FAILED|fatal:|ninja:|No rule to make target|undefined reference|ld.lld:|Killed|No space left|out of memory|cc1:|clang:)' "$GITHUB_WORKSPACE/twrp-build.log" | tail -300 > "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" || true
+            tail -300 "$GITHUB_WORKSPACE/twrp-build.log" > "$GITHUB_WORKSPACE/diagnostics/build-tail.txt" || true
           fi
           echo "=== error summary ==="
           cat "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" 2>/dev/null || true
