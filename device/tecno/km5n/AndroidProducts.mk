@@ -1,2 +1,2 @@
 PRODUCT_MAKEFILES := $(LOCAL_DIR)/twrp_km5n.mk
-COMMON_LUNCH_CHOICES := twrp_km5n-eng
+COMMON_LUNCH_CHOICES := twrp_km5n-bp2a-eng
