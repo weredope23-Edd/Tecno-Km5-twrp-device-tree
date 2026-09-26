@@ -24,19 +24,19 @@ AB_OTA_PARTITIONS += \
     vbmeta_system \
     vbmeta_vendor
 
-# Retain the stock vendor API level for compatibility.
+# Stock vendor API level.
 PRODUCT_SHIPPING_API_LEVEL := 35
 
+# TWRP/Android recovery-side packages that are present in the minimal
+# TWRP/AOSP source.  Do not list MTK proprietary modules here: the minimal
+# manifest does not provide their source definitions.  Stock MTK services
+# remain a separate runtime/vendor integration task.
 PRODUCT_PACKAGES += \
-    android.hardware.boot@1.2-mtkimpl \
-    android.hardware.boot@1.2-mtkimpl.recovery \
+    android.hardware.fastboot@1.0-impl-mock \
+    android.hardware.fastboot@1.0-impl-mock.recovery \
+    fastbootd \
     android.hardware.health@2.1-impl \
-    android.hardware.health@2.1-service \
-    fastbootd
-
-PRODUCT_PACKAGES += \
-    mtk_plpath_utils \
-    mtk_plpath_utils.recovery
+    android.hardware.health@2.1-service
 
 PRODUCT_COPY_FILES += \
     $(LOCAL_PATH)/recovery/root/init.recovery.mt6768.rc:$(TARGET_RECOVERY_ROOT_OUT)/init.recovery.mt6768.rc \
