@@ -181,6 +181,7 @@ jobs:
           set -o pipefail
           cd "$TWRP_DIR"
           export ALLOW_MISSING_DEPENDENCIES=true
+          export TARGET_RELEASE=bp2a
           export LC_ALL=C
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
@@ -234,6 +235,7 @@ jobs:
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
           source build/envsetup.sh
+          export TARGET_RELEASE=bp2a
           lunch "$LUNCH_TARGET" >/dev/null
           echo "Build start: $(date -u)"
           df -h "$GITHUB_WORKSPACE"
