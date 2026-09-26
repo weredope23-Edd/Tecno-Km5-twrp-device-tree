@@ -182,10 +182,20 @@ jobs:
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
           source build/envsetup.sh
+
+          # Do not let bash -e hide the actual lunch diagnostic. A failed lunch
+          # must be captured, printed, and archived before we stop the job.
+          set +e
           lunch "$LUNCH_TARGET" > "$GITHUB_WORKSPACE/lunch.log" 2>&1
           lunch_rc=$?
+          set -e
           cat "$GITHUB_WORKSPACE/lunch.log"
-          test "$lunch_rc" -eq 0
+          echo "lunch exit code: $lunch_rc"
+          if [ "$lunch_rc" -ne 0 ]; then
+            echo "ERROR: lunch failed; see lunch.log for the complete diagnostic."
+            exit "$lunch_rc"
+          fi
+
           {
             echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
             echo "TARGET_DEVICE=$(get_build_var TARGET_DEVICE)"
