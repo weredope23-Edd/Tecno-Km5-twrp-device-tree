@@ -18,6 +18,13 @@ if grep -RInE 'twrp371|twrp-14|twrp_km5n-next|configs/twrp371|TARGET_RELEASE[[:s
   fail "legacy TWRP 3.7.1/TWRP-14 configuration remains"
 fi
 
+# Android 15 treats PRODUCT_USE_DYNAMIC_PARTITIONS as a readonly product
+# variable during BoardConfig evaluation. It must be declared at product level.
+if grep -q '^PRODUCT_USE_DYNAMIC_PARTITIONS[[:space:]]*:=' "$BC"; then
+  fail "PRODUCT_USE_DYNAMIC_PARTITIONS must not be assigned in BoardConfig.mk"
+fi
+grep -q '^PRODUCT_USE_DYNAMIC_PARTITIONS := true$' "$DM" || fail "dynamic partitions are not enabled at product level"
+
 grep -q '^BOARD_BOOT_HEADER_VERSION := 4$' "$BC" || fail "boot header is not v4"
 grep -q '^BOARD_KERNEL_PAGESIZE := 4096$' "$BC" || fail "kernel page size is not 4096"
 grep -q '^BOARD_RAMDISK_USE_LZ4 := true$' "$BC" || fail "vendor ramdisk compression is not LZ4"
@@ -40,7 +47,6 @@ for v in BOARD_SYSTEMIMAGE_FILE_SYSTEM_TYPE BOARD_SYSTEM_EXTIMAGE_FILE_SYSTEM_TY
 done
 
 grep -q '^BOARD_FLASH_BLOCK_SIZE := 262144$' "$BC" || fail "flash block size is not 256 KiB"
-grep -q '^PRODUCT_USE_DYNAMIC_PARTITIONS := true$' "$BC" || fail "dynamic partitions are not enabled in BoardConfig"
 grep -q '^BOARD_USES_METADATA_PARTITION := true$' "$BC" || fail "metadata partition is not enabled"
 grep -q '^TARGET_USERIMAGES_USE_F2FS := true$' "$BC" || fail "F2FS support is not enabled"
 
