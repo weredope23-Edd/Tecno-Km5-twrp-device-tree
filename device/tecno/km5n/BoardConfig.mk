@@ -17,13 +17,15 @@ BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
 
 # KM5n uses Android boot header v4 with recovery carried by vendor_boot.
 BOARD_BOOT_HEADER_VERSION := 4
+BOARD_KERNEL_PAGESIZE := 4096
+BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOT_HEADER_VERSION)
+BOARD_MKBOOTIMG_ARGS += --pagesize $(BOARD_KERNEL_PAGESIZE)
+BOARD_RAMDISK_USE_LZ4 := true
 BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true
 BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT := true
 TARGET_NO_RECOVERY := true
 
-# Stock KM5n logical-partition layout.  These declarations are kept
-# authoritative and match recovery.fstab: system, system_ext, product,
-# vendor, odm_dlkm, system_dlkm and vendor_dlkm are logical images.
+# Stock KM5n logical-partition layout.
 TARGET_COPY_OUT_SYSTEM := system
 TARGET_COPY_OUT_SYSTEM_EXT := system_ext
 TARGET_COPY_OUT_PRODUCT := product
@@ -55,9 +57,10 @@ BOARD_DTBOIMG_PARTITION_SIZE := 8388608
 BOARD_INIT_BOOT_IMAGE_PARTITION_SIZE := 8388608
 BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE := 67108864
 BOARD_VENDOR_DLKMIMAGE_PARTITION_SIZE := 13807616
-BOARD_FLASH_BLOCK_SIZE := 4096
+# Android convention: kernel page size * 64, not the 4 KiB page size itself.
+BOARD_FLASH_BLOCK_SIZE := 262144
 
-# The stock KM5n vendor is API 35; keep the build SDK declaration compatible.
+# The stock KM5n vendor is API 35.
 BOARD_SYSTEMSDK_VERSIONS := 35
 
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
@@ -68,15 +71,15 @@ TARGET_SCREEN_DENSITY := 280
 TW_THEME := portrait_hdpi
 TW_DEVICE_VERSION := KM5n-TWRP-16-MT6768
 
-# FBE metadata encryption is retained; Trustonic/keymaster services are
-# supplied by the stock vendor partition at runtime.
+# Stock userdata is metadata-encrypted FBE.  The stock crypto stack is
+# Trustonic KeyMint 3.0, not legacy Keymaster 4.x, so do not force a
+# Keymaster 4.x implementation into this Android 15 recovery.
 TW_INCLUDE_CRYPTO := true
 TW_INCLUDE_CRYPTO_FBE := true
 TW_INCLUDE_FBE := true
 TW_INCLUDE_FBE_METADATA_DECRYPT := true
 TW_USE_FSCRYPT_POLICY := 2
 TW_PREPARE_DATA_MEDIA_EARLY := true
-TW_FORCE_KEYMASTER_VER := true
 RECOVERY_SDCARD_ON_DATA := true
 
 TW_HAS_NO_RECOVERY_PARTITION := true
@@ -90,7 +93,6 @@ TW_SCREEN_BLANK_ON_BOOT := true
 TW_USE_MODEL_HARDWARE_ID_FOR_DEVICE_ID := true
 
 # Stock vendor_boot recovery ramdisk modules.
-TW_LOAD_VENDOR_BOOT_MODULES := true
 TW_LOAD_VENDOR_MODULES := $(shell find $(DEVICE_PATH)/recovery/root/lib/modules -maxdepth 1 -name "*.ko" -printf "%f ")
 
 TARGET_USES_MKE2FS := true
