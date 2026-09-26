@@ -57,10 +57,17 @@ jobs:
         run: |
           set -euxo pipefail
           echo "GITHUB_SHA=$GITHUB_SHA"
-          echo "GITHUB_REF=$GITHUB_REF"
           echo "GITHUB_WORKFLOW_SHA=$GITHUB_WORKFLOW_SHA"
           echo "Checked-out HEAD=$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
+
+      # Fast gate: validate the authoritative KM5n tree BEFORE downloading
+      # the ~70+ GB TWRP source. This is where configuration mistakes belong.
+      - name: Run KM5n compatibility audit BEFORE source sync
+        run: |
+          set -euxo pipefail
+          chmod +x "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh"
+          "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh" "$DEVICE_PATH"
 
       - name: Verify runner capacity
         run: |
@@ -83,7 +90,12 @@ jobs:
             if sudo apt-get update; then break; fi
             sleep 5
           done
-          sudo apt-get install -y --no-install-recommends             openjdk-17-jdk-headless bc bison build-essential curl flex             g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick             lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev             libssl-dev libxml2-utils lzop pngcrush python3 python3-pip             python3-setuptools rsync unzip xsltproc zip zlib1g-dev
+          sudo apt-get install -y --no-install-recommends \
+            openjdk-17-jdk-headless bc bison build-essential curl flex \
+            g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick \
+            lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev \
+            libssl-dev libxml2-utils lzop pngcrush python3 python3-pip \
+            python3-setuptools rsync unzip xsltproc zip zlib1g-dev
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           java -version
@@ -94,16 +106,11 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p "$HOME/bin"
-          curl -fsSL --retry 8 --retry-all-errors --retry-delay 3             https://storage.googleapis.com/git-repo-downloads/repo             -o "$HOME/bin/repo"
+          curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 \
+            https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
           chmod 0755 "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
           "$HOME/bin/repo" version
-
-      - name: Record device tree revision
-        run: |
-          set -euxo pipefail
-          git rev-parse HEAD
-          find "$DEVICE_PATH" -maxdepth 2 -type f | sort
 
       - name: Initialize TWRP 16.0 source
         run: |
@@ -114,7 +121,6 @@ jobs:
           repo init --depth=1 -u "$TWRP_MANIFEST_URL" -b "$TWRP_MANIFEST_BRANCH"
           test -s .repo/manifest.xml
           repo version
-          head -60 .repo/manifest.xml
           df -h "$GITHUB_WORKSPACE"
 
       - name: Sync TWRP 16.0 source
@@ -125,15 +131,14 @@ jobs:
           rc=1
           for attempt in 1 2 3; do
             echo "=== repo sync attempt $attempt/3 ===" | tee -a repo-sync.log
-            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags               --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee -a repo-sync.log
-            rc=$?
+            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags \
+              --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee -a repo-sync.log
+            rc=${PIPESTATUS[0]}
             if [ "$rc" -eq 0 ]; then break; fi
             df -h "$GITHUB_WORKSPACE" | tee -a repo-sync.log
             sleep 10
           done
           echo "repo sync final exit code: $rc" | tee -a repo-sync.log
-          df -h "$GITHUB_WORKSPACE" | tee -a repo-sync.log
-          du -sh .repo 2>/dev/null | tee -a repo-sync.log || true
           exit "$rc"
 
       - name: Verify source
@@ -149,7 +154,6 @@ jobs:
           echo "build/make: $(git -C build/make rev-parse HEAD)"
           echo "build/soong: $(git -C build/soong rev-parse HEAD)"
           du -sh "$TWRP_DIR" "$TWRP_DIR/.repo"
-          df -h "$GITHUB_WORKSPACE"
 
       - name: Install authoritative KM5n tree
         run: |
@@ -163,23 +167,14 @@ jobs:
           test -f "$DEVICE_PATH/device.mk"
           test -f "$DEVICE_PATH/twrp_km5n.mk"
 
-      - name: Preflight KM5n configuration
+      # Second gate: prove that the exact tree copied into the TWRP source is
+      # identical in configuration terms before invoking the Android build.
+      - name: Re-run KM5n compatibility audit inside TWRP source tree
         run: |
           set -euxo pipefail
           cd "$TWRP_DIR"
-          if grep -RInE 'twrp371|twrp-14|TARGET_RELEASE[[:space:]]*[:?+]?=[[:space:]]*next|twrp_km5n-next|configs/twrp371' "$DEVICE_PATH"             --include='*.mk' --include='*.bp' --include='*.xml' --include='*.rc'; then
-            echo "ERROR: legacy TWRP 3.7.1/TWRP-14 configuration is active"
-            exit 1
-          fi
-          grep -q '^BOARD_BOOT_HEADER_VERSION[[:space:]]*:=[[:space:]]*4' "$DEVICE_PATH/BoardConfig.mk"
-          grep -q '^BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
-          grep -q '^BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
-          grep -q '^TARGET_NO_RECOVERY[[:space:]]*:=[[:space:]]*true' "$DEVICE_PATH/BoardConfig.mk"
-          grep -q '^TARGET_COPY_OUT_VENDOR[[:space:]]*:=[[:space:]]*vendor' "$DEVICE_PATH/BoardConfig.mk"
-          grep -q '^BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE[[:space:]]*:=[[:space:]]*67108864' "$DEVICE_PATH/BoardConfig.mk"
-          grep -q '^PRODUCT_SHIPPING_API_LEVEL[[:space:]]*:=[[:space:]]*35' "$DEVICE_PATH/device.mk"
-          grep -q 'twrp_km5n-bp2a-eng' "$DEVICE_PATH/AndroidProducts.mk"
-          echo "PASS: authoritative Android 15/API 35 vendor_boot-v4 configuration"
+          chmod +x "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh"
+          "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh" "$DEVICE_PATH"
 
       - name: Lunch and compatibility preflight
         run: |
@@ -202,6 +197,9 @@ jobs:
             echo "BOARD_BOOT_HEADER_VERSION=$(get_build_var BOARD_BOOT_HEADER_VERSION)"
             echo "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE=$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)"
             echo "TARGET_COPY_OUT_VENDOR=$(get_build_var TARGET_COPY_OUT_VENDOR)"
+            echo "TARGET_COPY_OUT_PRODUCT=$(get_build_var TARGET_COPY_OUT_PRODUCT)"
+            echo "TARGET_COPY_OUT_SYSTEM_EXT=$(get_build_var TARGET_COPY_OUT_SYSTEM_EXT)"
+            echo "TARGET_COPY_OUT_ODM=$(get_build_var TARGET_COPY_OUT_ODM)"
             echo "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=$(get_build_var BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)"
             echo "BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT=$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)"
             echo "TARGET_NO_RECOVERY=$(get_build_var TARGET_NO_RECOVERY)"
@@ -214,6 +212,9 @@ jobs:
           test "$(get_build_var BOARD_BOOT_HEADER_VERSION)" = 4
           test "$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)" = 67108864
           test "$(get_build_var TARGET_COPY_OUT_VENDOR)" = vendor
+          test "$(get_build_var TARGET_COPY_OUT_PRODUCT)" = product
+          test "$(get_build_var TARGET_COPY_OUT_SYSTEM_EXT)" = system_ext
+          test "$(get_build_var TARGET_COPY_OUT_ODM)" = odm
           test "$(get_build_var BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)" = true
           test "$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)" = true
           test "$(get_build_var TARGET_NO_RECOVERY)" = true
@@ -238,7 +239,7 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
           free -h
           mka adbd "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/twrp-build.log"
-          rc=$?
+          rc=${PIPESTATUS[0]}
           echo "mka exit code: $rc"
           echo "Build end: $(date -u)"
           exit "$rc"
@@ -285,7 +286,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/build-vars.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/twrp-build.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
           if [ -f "$GITHUB_WORKSPACE/twrp-build.log" ]; then
-            grep -E '(^| )(error:|ERROR|FAILED|fatal:|ninja:|No rule to make target|undefined reference|ld.lld:|Killed|No space left|out of memory)'               "$GITHUB_WORKSPACE/twrp-build.log" | tail -250               > "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" || true
+            grep -E '(^| )(error:|ERROR|FAILED|fatal:|ninja:|No rule to make target|undefined reference|ld.lld:|Killed|No space left|out of memory)' "$GITHUB_WORKSPACE/twrp-build.log" | tail -250 > "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" || true
           fi
           echo "=== error summary ==="
           cat "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" 2>/dev/null || true
