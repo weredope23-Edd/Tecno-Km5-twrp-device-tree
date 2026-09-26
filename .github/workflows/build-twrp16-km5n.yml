@@ -61,8 +61,6 @@ jobs:
           echo "Checked-out HEAD=$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
 
-      # Fast gate: validate the authoritative KM5n tree BEFORE downloading
-      # the ~70+ GB TWRP source. This is where configuration mistakes belong.
       - name: Run KM5n compatibility audit BEFORE source sync
         run: |
           set -euxo pipefail
@@ -167,8 +165,6 @@ jobs:
           test -f "$DEVICE_PATH/device.mk"
           test -f "$DEVICE_PATH/twrp_km5n.mk"
 
-      # Second gate: prove that the exact tree copied into the TWRP source is
-      # identical in configuration terms before invoking the Android build.
       - name: Re-run KM5n compatibility audit inside TWRP source tree
         run: |
           set -euxo pipefail
@@ -178,7 +174,7 @@ jobs:
 
       - name: Lunch and compatibility preflight
         run: |
-          set -o pipefail
+          set -euo pipefail
           cd "$TWRP_DIR"
           export ALLOW_MISSING_DEPENDENCIES=true
           export TARGET_RELEASE=bp2a
@@ -194,7 +190,7 @@ jobs:
             echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
             echo "TARGET_DEVICE=$(get_build_var TARGET_DEVICE)"
             echo "TARGET_BUILD_VARIANT=$(get_build_var TARGET_BUILD_VARIANT)"
-            echo "TARGET_RELEASE=$(get_build_var TARGET_RELEASE)"
+            echo "TARGET_RELEASE_ENV=${TARGET_RELEASE:-}"
             echo "PLATFORM_VERSION=$(get_build_var PLATFORM_VERSION)"
             echo "PRODUCT_SHIPPING_API_LEVEL=$(get_build_var PRODUCT_SHIPPING_API_LEVEL)"
             echo "BOARD_SYSTEMSDK_VERSIONS=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)"
@@ -208,10 +204,10 @@ jobs:
             echo "BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT=$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)"
             echo "TARGET_NO_RECOVERY=$(get_build_var TARGET_NO_RECOVERY)"
           } | tee "$GITHUB_WORKSPACE/build-vars.log"
+          test "${TARGET_RELEASE:-}" = bp2a
           test "$(get_build_var TARGET_PRODUCT)" = twrp_km5n
           test "$(get_build_var TARGET_DEVICE)" = km5n
           test "$(get_build_var TARGET_BUILD_VARIANT)" = eng
-          test "$(get_build_var TARGET_RELEASE)" = bp2a
           test "$(get_build_var PRODUCT_SHIPPING_API_LEVEL)" = 35
           test "$(get_build_var BOARD_BOOT_HEADER_VERSION)" = 4
           test "$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)" = 67108864
@@ -231,14 +227,14 @@ jobs:
       - name: Build KM5n vendor_boot
         id: build
         run: |
-          set -o pipefail
+          set -euo pipefail
           cd "$TWRP_DIR"
           export ALLOW_MISSING_DEPENDENCIES=true
+          export TARGET_RELEASE=bp2a
           export LC_ALL=C
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
           source build/envsetup.sh
-          export TARGET_RELEASE=bp2a
           lunch "$LUNCH_TARGET" >/dev/null
           echo "Build start: $(date -u)"
           df -h "$GITHUB_WORKSPACE"
