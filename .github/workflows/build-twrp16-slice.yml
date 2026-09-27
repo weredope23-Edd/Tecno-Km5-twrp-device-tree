@@ -62,7 +62,7 @@ jobs:
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
           for attempt in 1 2 3; do sudo apt-get update && break || sleep 5; done
-          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev zram-tools
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           mkdir -p "$HOME/bin"
@@ -70,23 +70,24 @@ jobs:
           chmod 0755 "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Configure zram swap and memory profile
+      - name: Configure memory profile
         run: |
           set -euxo pipefail
-          sudo modprobe zram
-          sudo sed -i 's/^#PERCENT=50/PERCENT=90/' /etc/default/zramswap || true
-          sudo sed -i 's/^#PRIORITY=100/PRIORITY=1000/' /etc/default/zramswap || true
-          sudo systemctl restart zramswap
-          zramctl || true
+          echo 'GOMAXPROCS=2' >> "$GITHUB_ENV"
+          echo 'NINJA_ARGS=-j1' >> "$GITHUB_ENV"
+          echo 'NINJA_EXTRA_ARGS=-j1' >> "$GITHUB_ENV"
+          echo 'NINJA_HIGHMEM_NUM_JOBS=1' >> "$GITHUB_ENV"
+          echo 'MALLOC_ARENA_MAX=2' >> "$GITHUB_ENV"
+          echo '=== Memory profile ==='
           free -h
           swapon --show
-          {
-            echo 'GOMAXPROCS=2'
-            echo 'NINJA_ARGS=-j1'
-            echo 'NINJA_EXTRA_ARGS=-j1'
-            echo 'NINJA_HIGHMEM_NUM_JOBS=1'
-            echo 'MALLOC_ARENA_MAX=2'
-          } >> "$GITHUB_ENV"
+          echo '=== zram availability ==='
+          if sudo modprobe zram 2>/dev/null; then
+            if command -v zramctl >/dev/null 2>&1; then zramctl || true; fi
+            echo 'zram module available; existing runner swap remains authoritative.'
+          else
+            echo 'zram module unavailable on this runner; continuing with disk-backed swap.'
+          fi
 
       - name: Restore compiler cache
         uses: hendrikmuhs/ccache-action@v1.2
