@@ -32,6 +32,11 @@ jobs:
       BUILD_TARGET: vendorbootimage
       BUILD_JOBS: ${{ inputs.build_jobs }}
       SLICE: ${{ inputs.slice }}
+      GOMAXPROCS: '2'
+      NINJA_ARGS: '-j1'
+      NINJA_EXTRA_ARGS: '-j1'
+      NINJA_HIGHMEM_NUM_JOBS: '1'
+      MALLOC_ARENA_MAX: '2'
 
     steps:
       - name: Expand build space
@@ -57,13 +62,37 @@ jobs:
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
           for attempt in 1 2 3; do sudo apt-get update && break || sleep 5; done
-          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev zram-tools
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           mkdir -p "$HOME/bin"
           curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
           chmod 0755 "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Configure zram swap and memory profile
+        run: |
+          set -euxo pipefail
+          sudo modprobe zram
+          sudo sed -i 's/^#PERCENT=50/PERCENT=90/' /etc/default/zramswap || true
+          sudo sed -i 's/^#PRIORITY=100/PRIORITY=1000/' /etc/default/zramswap || true
+          sudo systemctl restart zramswap
+          zramctl || true
+          free -h
+          swapon --show
+          {
+            echo 'GOMAXPROCS=2'
+            echo 'NINJA_ARGS=-j1'
+            echo 'NINJA_EXTRA_ARGS=-j1'
+            echo 'NINJA_HIGHMEM_NUM_JOBS=1'
+            echo 'MALLOC_ARENA_MAX=2'
+          } >> "$GITHUB_ENV"
+
+      - name: Restore compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          create-symlink: true
+          max-size: 5G
 
       - name: Initialize and sync TWRP source
         run: |
@@ -114,6 +143,9 @@ jobs:
           export TARGET_RELEASE=bp2a
           export LC_ALL=C
           export TMPDIR="$TWRP_DIR/tmp"
+          export USE_CCACHE=1
+          export CCACHE_EXEC="$(command -v ccache || true)"
+          export CCACHE_DIR="$TWRP_DIR/.ccache"
           mkdir -p "$TMPDIR" "$GITHUB_WORKSPACE/checkpoint"
           source build/envsetup.sh
           lunch "$LUNCH_TARGET" >/dev/null 2>&1
@@ -127,6 +159,7 @@ jobs:
             while :; do
               echo "=== $(date -u) ===" >> "$MON"
               free -h >> "$MON" 2>&1
+              swapon --show >> "$MON" 2>&1
               df -h "$GITHUB_WORKSPACE" >> "$MON" 2>&1
               ps -eo pid,ppid,%mem,%cpu,rss,vsz,stat,comm --sort=-rss | head -25 >> "$MON" 2>&1
               echo >> "$MON"
@@ -135,7 +168,7 @@ jobs:
           ) &
           MONITOR_PID=$!
           set +e
-          timeout --signal=TERM --kill-after=60s 45m bash -c 'source build/envsetup.sh; export ALLOW_MISSING_DEPENDENCIES=true TARGET_RELEASE=bp2a LC_ALL=C TMPDIR="$PWD/tmp"; lunch "$LUNCH_TARGET" >/dev/null 2>&1; mka "$BUILD_TARGET" -j"$BUILD_JOBS"' 2>&1 | tee -a "$LOG"
+          timeout --signal=TERM --kill-after=60s 45m bash -c 'source build/envsetup.sh; export ALLOW_MISSING_DEPENDENCIES=true TARGET_RELEASE=bp2a LC_ALL=C TMPDIR="$PWD/tmp" USE_CCACHE=1 CCACHE_EXEC="$(command -v ccache || true)" CCACHE_DIR="$PWD/.ccache" GOMAXPROCS=2 NINJA_ARGS=-j1 NINJA_EXTRA_ARGS=-j1 NINJA_HIGHMEM_NUM_JOBS=1 MALLOC_ARENA_MAX=2; lunch "$LUNCH_TARGET" >/dev/null 2>&1; mka "$BUILD_TARGET" -j1' 2>&1 | tee -a "$LOG"
           RC=${PIPESTATUS[0]}
           set -e
           kill "$MONITOR_PID" 2>/dev/null || true
