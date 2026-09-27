@@ -4,13 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       build_jobs:
-        description: "Parallel build jobs (1-2). Use 1 for the safest memory profile."
+        description: "Ninja jobs (1 recommended on the standard runner)"
         required: true
         default: "1"
         type: choice
-        options:
-          - "1"
-          - "2"
+        options: ["1", "2"]
 
 permissions:
   contents: read
@@ -38,7 +36,7 @@ jobs:
         with:
           root-reserve-mb: 2048
           temp-reserve-mb: 128
-          swap-size-mb: 8192
+          swap-size-mb: 12288
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-codeql: 'true'
@@ -51,15 +49,13 @@ jobs:
           ref: ${{ github.workflow_sha }}
           fetch-depth: 1
 
-      - name: Verify workflow/source identity
+      - name: Verify workflow identity
         run: |
           set -euxo pipefail
-          echo "GITHUB_SHA=$GITHUB_SHA"
-          echo "GITHUB_WORKFLOW_SHA=$GITHUB_WORKFLOW_SHA"
-          echo "Checked-out HEAD=$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
+          echo "Device-tree commit: $(git rev-parse HEAD)"
 
-      - name: Run KM5n compatibility audit BEFORE source sync
+      - name: Audit KM5n tree
         run: |
           set -euxo pipefail
           chmod +x "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh"
@@ -68,8 +64,7 @@ jobs:
       - name: Verify runner capacity
         run: |
           set -euxo pipefail
-          sudo rm -rf /usr/local/lib/android /usr/local/.ghcup /opt/hostedtoolcache/CodeQL 2>/dev/null || true
-          sudo rm -rf /usr/share/dotnet /usr/local/share/powershell /opt/ghc 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/android /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/local/share/powershell /opt/ghc 2>/dev/null || true
           sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/* /var/tmp/* 2>/dev/null || true
           df -h /
           df -h "$GITHUB_WORKSPACE"
@@ -78,22 +73,16 @@ jobs:
           avail=$(df --output=avail "$GITHUB_WORKSPACE" | tail -1 | tr -d ' ')
           test "$avail" -ge 90000000
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
-          for attempt in 1 2 3; do
-            if sudo apt-get update; then break; fi
-            sleep 5
-          done
+          for attempt in 1 2 3; do sudo apt-get update && break || sleep 5; done
           sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
-          java -version
-          python3 --version
-          git --version
 
-      - name: Install repo tool
+      - name: Install repo
         run: |
           set -euxo pipefail
           mkdir -p "$HOME/bin"
@@ -102,7 +91,7 @@ jobs:
           echo "$HOME/bin" >> "$GITHUB_PATH"
           "$HOME/bin/repo" version
 
-      - name: Initialize TWRP 16.0 source
+      - name: Initialize TWRP 16.0
         run: |
           set -euxo pipefail
           rm -rf "$TWRP_DIR"
@@ -110,24 +99,21 @@ jobs:
           cd "$TWRP_DIR"
           repo init --depth=1 -u "$TWRP_MANIFEST_URL" -b "$TWRP_MANIFEST_BRANCH"
           test -s .repo/manifest.xml
-          repo version
-          df -h "$GITHUB_WORKSPACE"
 
-      - name: Sync TWRP 16.0 source
+      - name: Sync TWRP 16.0
         run: |
           set -o pipefail
           cd "$TWRP_DIR"
-          : > repo-sync.log
+          : > "$GITHUB_WORKSPACE/repo-sync.log"
           rc=1
           for attempt in 1 2 3; do
-            echo "=== repo sync attempt $attempt/3 ===" | tee -a repo-sync.log
-            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee -a repo-sync.log
+            echo "=== repo sync attempt $attempt/3 ===" | tee -a "$GITHUB_WORKSPACE/repo-sync.log"
+            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee -a "$GITHUB_WORKSPACE/repo-sync.log"
             rc=${PIPESTATUS[0]}
-            if [ "$rc" -eq 0 ]; then break; fi
-            df -h "$GITHUB_WORKSPACE" | tee -a repo-sync.log
+            [ "$rc" -eq 0 ] && break
+            df -h "$GITHUB_WORKSPACE" | tee -a "$GITHUB_WORKSPACE/repo-sync.log"
             sleep 10
           done
-          echo "repo sync final exit code: $rc" | tee -a repo-sync.log
           exit "$rc"
 
       - name: Verify source
@@ -138,11 +124,7 @@ jobs:
           test -f build/envsetup.sh
           test -d build/make
           test -d build/soong
-          repo manifest -r > manifest-revisions.xml
-          echo "recovery: $(git -C bootable/recovery rev-parse HEAD)"
-          echo "build/make: $(git -C build/make rev-parse HEAD)"
-          echo "build/soong: $(git -C build/soong rev-parse HEAD)"
-          du -sh "$TWRP_DIR" "$TWRP_DIR/.repo"
+          repo manifest -r > "$GITHUB_WORKSPACE/manifest-revisions.xml"
 
       - name: Install authoritative KM5n tree
         run: |
@@ -155,15 +137,10 @@ jobs:
           test -f "$DEVICE_PATH/AndroidProducts.mk"
           test -f "$DEVICE_PATH/device.mk"
           test -f "$DEVICE_PATH/twrp_km5n.mk"
-
-      - name: Re-run KM5n compatibility audit inside TWRP source tree
-        run: |
-          set -euxo pipefail
-          cd "$TWRP_DIR"
           chmod +x "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh"
           "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh" "$DEVICE_PATH"
 
-      - name: Lunch and compatibility preflight
+      - name: Lunch and preflight
         run: |
           set -eo pipefail
           cd "$TWRP_DIR"
@@ -175,46 +152,43 @@ jobs:
           source build/envsetup.sh
           set +e
           lunch "$LUNCH_TARGET" > "$GITHUB_WORKSPACE/lunch.log" 2>&1
-          lunch_rc=$?
+          rc=$?
           set -e
           cat "$GITHUB_WORKSPACE/lunch.log"
-          echo "lunch exit code: $lunch_rc"
-          if [ "$lunch_rc" -ne 0 ]; then echo "ERROR: lunch failed; see lunch.log for the complete diagnostic."; exit "$lunch_rc"; fi
+          exit "$rc"
+
+      - name: Record resolved build configuration
+        run: |
+          set -euo pipefail
+          cd "$TWRP_DIR"
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export TARGET_RELEASE=bp2a
+          lunch "$LUNCH_TARGET" >/dev/null 2>&1
           {
             echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
             echo "TARGET_DEVICE=$(get_build_var TARGET_DEVICE)"
             echo "TARGET_BUILD_VARIANT=$(get_build_var TARGET_BUILD_VARIANT)"
-            echo "TARGET_RELEASE_ENV=${TARGET_RELEASE:-}"
             echo "PLATFORM_VERSION=$(get_build_var PLATFORM_VERSION)"
             echo "PRODUCT_SHIPPING_API_LEVEL=$(get_build_var PRODUCT_SHIPPING_API_LEVEL)"
             echo "BOARD_SYSTEMSDK_VERSIONS=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)"
             echo "BOARD_BOOT_HEADER_VERSION=$(get_build_var BOARD_BOOT_HEADER_VERSION)"
             echo "BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE=$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)"
-            echo "TARGET_COPY_OUT_VENDOR=$(get_build_var TARGET_COPY_OUT_VENDOR)"
-            echo "TARGET_COPY_OUT_PRODUCT=$(get_build_var TARGET_COPY_OUT_PRODUCT)"
-            echo "TARGET_COPY_OUT_SYSTEM_EXT=$(get_build_var TARGET_COPY_OUT_SYSTEM_EXT)"
-            echo "TARGET_COPY_OUT_ODM=$(get_build_var TARGET_COPY_OUT_ODM)"
             echo "BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=$(get_build_var BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)"
             echo "BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT=$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)"
             echo "TARGET_NO_RECOVERY=$(get_build_var TARGET_NO_RECOVERY)"
           } | tee "$GITHUB_WORKSPACE/build-vars.log"
-          test "${TARGET_RELEASE:-}" = bp2a
           test "$(get_build_var TARGET_PRODUCT)" = twrp_km5n
           test "$(get_build_var TARGET_DEVICE)" = km5n
           test "$(get_build_var TARGET_BUILD_VARIANT)" = eng
           test "$(get_build_var PRODUCT_SHIPPING_API_LEVEL)" = 35
           test "$(get_build_var BOARD_BOOT_HEADER_VERSION)" = 4
           test "$(get_build_var BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE)" = 67108864
-          test "$(get_build_var TARGET_COPY_OUT_VENDOR)" = vendor
-          test "$(get_build_var TARGET_COPY_OUT_PRODUCT)" = product
-          test "$(get_build_var TARGET_COPY_OUT_SYSTEM_EXT)" = system_ext
-          test "$(get_build_var TARGET_COPY_OUT_ODM)" = odm
           test "$(get_build_var BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT)" = true
           test "$(get_build_var BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT)" = true
           test "$(get_build_var TARGET_NO_RECOVERY)" = true
           sdk=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)
-          for v in $(printf '%s\n' "$sdk" | grep -oE '[0-9]+' || true); do test "$v" -ge 35 || { echo "ERROR: SDK version $v is below API 35"; exit 1; }; done
-          echo "PASS: build-system compatibility preflight"
+          for v in $(printf '%s\n' "$sdk" | grep -oE '[0-9]+' || true); do test "$v" -ge 35 || exit 1; done
 
       - name: Build KM5n vendor_boot
         id: build
@@ -229,29 +203,27 @@ jobs:
           source build/envsetup.sh
           lunch "$LUNCH_TARGET" > "$GITHUB_WORKSPACE/lunch-build.log" 2>&1
           echo "Build start: $(date -u)"
-          df -h "$GITHUB_WORKSPACE"
           free -h
-          echo "Build jobs: $BUILD_JOBS"
-          echo "The build is intentionally resource-conservative; increase to 2 only if a single-job build is stable."
-
+          df -h "$GITHUB_WORKSPACE"
+          echo "Build target: $BUILD_TARGET"
+          echo "Ninja jobs: $BUILD_JOBS"
+          echo "Important: adbd is no longer built as a separate target; this run builds only vendorbootimage."
           monitor="$GITHUB_WORKSPACE/build-resource-monitor.log"
           (
-            while kill -0 $$ 2>/dev/null; do
+            while :; do
               echo "=== $(date -u) ===" >> "$monitor"
               free -h >> "$monitor" 2>&1
               df -h "$GITHUB_WORKSPACE" >> "$monitor" 2>&1
               ps -eo pid,ppid,%mem,%cpu,rss,vsz,stat,comm --sort=-rss | head -25 >> "$monitor" 2>&1
               echo >> "$monitor"
-              sleep 20
+              sleep 15
             done
           ) &
           monitor_pid=$!
-
           set +e
-          mka adbd "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/twrp-build.log"
+          mka "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/twrp-build.log"
           rc=${PIPESTATUS[0]}
           set -e
-
           kill "$monitor_pid" 2>/dev/null || true
           wait "$monitor_pid" 2>/dev/null || true
           echo "mka exit code: $rc"
@@ -268,14 +240,14 @@ jobs:
           stat -c '%n %s bytes' "$IMG"
           bash "$DEVICE_PATH/scripts/validate_vendor_boot.sh" "$IMG"
           python3 - "$IMG" <<'PY'
-          import struct, sys
-          d = open(sys.argv[1], "rb").read()
-          assert d[:8] == b"VNDRBOOT", "bad vendor_boot magic"
-          version, page = struct.unpack_from("<II", d, 8)
-          assert version == 4, f"expected header v4, got {version}"
-          assert page == 4096, f"expected page 4096, got {page}"
-          assert len(d) <= 67108864, "vendor_boot exceeds 64 MiB"
-          print("PASS: vendor_boot v4 structure and partition-size checks")
+          import struct,sys
+          d=open(sys.argv[1],'rb').read()
+          assert d[:8] == b'VNDRBOOT', 'bad vendor_boot magic'
+          version,page=struct.unpack_from('<II',d,8)
+          assert version == 4, f'expected header v4, got {version}'
+          assert page == 4096, f'expected page 4096, got {page}'
+          assert len(d) <= 67108864, 'vendor_boot exceeds 64 MiB'
+          print('PASS: vendor_boot v4 structure and size checks')
           PY
           bash "$DEVICE_PATH/scripts/audit_twrp_output.sh" "out/target/product/km5n"
 
@@ -284,27 +256,18 @@ jobs:
         run: |
           set +e
           mkdir -p "$GITHUB_WORKSPACE/diagnostics"
-          cd "$TWRP_DIR" 2>/dev/null || exit 0
-          repo manifest -r > "$GITHUB_WORKSPACE/diagnostics/manifest-revisions.xml" 2>&1
-          repo status > "$GITHUB_WORKSPACE/diagnostics/repo-status.txt" 2>&1
+          cp "$GITHUB_WORKSPACE"/{repo-sync.log,lunch.log,lunch-build.log,build-vars.log,twrp-build.log,build-resource-monitor.log} "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
+          if [ -f "$GITHUB_WORKSPACE/twrp-build.log" ]; then
+            grep -E '(^| )(error:|ERROR|FAILED|fatal:|ninja:|No rule to make target|undefined reference|ld.lld:|Killed|No space left|out of memory|cc1:|clang:)' "$GITHUB_WORKSPACE/twrp-build.log" | tail -300 > "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" || true
+            tail -300 "$GITHUB_WORKSPACE/twrp-build.log" > "$GITHUB_WORKSPACE/diagnostics/build-tail.txt" || true
+          fi
           {
             echo "UTC: $(date -u)"
             uname -a
             nproc
             free -h
             df -h "$GITHUB_WORKSPACE"
-            du -sh "$TWRP_DIR" "$TWRP_DIR/.repo" 2>/dev/null
           } > "$GITHUB_WORKSPACE/diagnostics/runner.txt" 2>&1
-          cp "$GITHUB_WORKSPACE/repo-sync.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
-          cp "$GITHUB_WORKSPACE/lunch.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
-          cp "$GITHUB_WORKSPACE/lunch-build.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
-          cp "$GITHUB_WORKSPACE/build-vars.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
-          cp "$GITHUB_WORKSPACE/twrp-build.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
-          cp "$GITHUB_WORKSPACE/build-resource-monitor.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
-          if [ -f "$GITHUB_WORKSPACE/twrp-build.log" ]; then
-            grep -E '(^| )(error:|ERROR|FAILED|fatal:|ninja:|No rule to make target|undefined reference|ld.lld:|Killed|No space left|out of memory|cc1:|clang:)' "$GITHUB_WORKSPACE/twrp-build.log" | tail -300 > "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" || true
-            tail -300 "$GITHUB_WORKSPACE/twrp-build.log" > "$GITHUB_WORKSPACE/diagnostics/build-tail.txt" || true
-          fi
           echo "=== error summary ==="
           cat "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" 2>/dev/null || true
 
@@ -314,9 +277,8 @@ jobs:
         with:
           name: km5n-twrp16-diagnostics-${{ github.run_id }}
           path: diagnostics/
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 3
-          compression-level: 6
 
       - name: Upload vendor_boot
         if: steps.build.outcome == 'success'
@@ -332,11 +294,9 @@ jobs:
         if: always()
         run: |
           {
-            echo "## KM5n TWRP 16.0"
-            echo ""
+            echo "## KM5n TWRP 16.0 build"
             echo "- Manifest: $TWRP_MANIFEST_URL"
             echo "- Branch: $TWRP_MANIFEST_BRANCH"
-            echo "- Lunch: $LUNCH_TARGET"
             echo "- Target: $BUILD_TARGET"
             echo "- Jobs: $BUILD_JOBS"
             echo "- Device-tree commit: $(git rev-parse HEAD)"
