@@ -62,7 +62,7 @@ jobs:
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
           for attempt in 1 2 3; do sudo apt-get update && break || sleep 5; done
-          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev ccache
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           mkdir -p "$HOME/bin"
@@ -91,9 +91,11 @@ jobs:
 
       - name: Restore compiler cache
         uses: hendrikmuhs/ccache-action@v1.2
+        continue-on-error: true
         with:
           create-symlink: true
           max-size: 5G
+          update-package-index: true
 
       - name: Initialize and sync TWRP source
         run: |
