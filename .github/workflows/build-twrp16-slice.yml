@@ -135,7 +135,7 @@ jobs:
           ) &
           MONITOR_PID=$!
           set +e
-          timeout --signal=TERM --kill-after=60s 45m mka "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee -a "$LOG"
+          timeout --signal=TERM --kill-after=60s 45m bash -c 'source build/envsetup.sh; export ALLOW_MISSING_DEPENDENCIES=true TARGET_RELEASE=bp2a LC_ALL=C TMPDIR="$PWD/tmp"; lunch "$LUNCH_TARGET" >/dev/null 2>&1; mka "$BUILD_TARGET" -j"$BUILD_JOBS"' 2>&1 | tee -a "$LOG"
           RC=${PIPESTATUS[0]}
           set -e
           kill "$MONITOR_PID" 2>/dev/null || true
