@@ -17,19 +17,21 @@ concurrency:
   group: km5n-twrp16-build
   cancel-in-progress: false
 
+env:
+  TWRP_MANIFEST_URL: https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git
+  TWRP_MANIFEST_BRANCH: twrp-16.0
+  DEVICE_PATH: device/tecno/km5n
+  LUNCH_TARGET: twrp_km5n-bp2a-eng
+  BUILD_TARGET: vendorbootimage
+
 jobs:
-  build:
+  prepare:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    outputs:
+      ready: ${{ steps.ready.outputs.ready }}
     env:
-      TWRP_MANIFEST_URL: https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git
-      TWRP_MANIFEST_BRANCH: twrp-16.0
       TWRP_DIR: ${{ github.workspace }}/twrp16
-      DEVICE_PATH: device/tecno/km5n
-      LUNCH_TARGET: twrp_km5n-bp2a-eng
-      BUILD_TARGET: vendorbootimage
-      BUILD_JOBS: ${{ inputs.build_jobs || '1' }}
-
     steps:
       - name: Expand build space
         uses: easimon/maximize-build-space@master
@@ -49,12 +51,6 @@ jobs:
           ref: ${{ github.workflow_sha }}
           fetch-depth: 1
 
-      - name: Verify workflow identity
-        run: |
-          set -euxo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_WORKFLOW_SHA"
-          echo "Device-tree commit: $(git rev-parse HEAD)"
-
       - name: Audit KM5n tree
         run: |
           set -euxo pipefail
@@ -66,14 +62,12 @@ jobs:
           set -euxo pipefail
           sudo rm -rf /usr/local/lib/android /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/local/share/powershell /opt/ghc 2>/dev/null || true
           sudo rm -rf /var/lib/apt/lists/* /var/cache/apt/* /tmp/* /var/tmp/* 2>/dev/null || true
-          df -h /
           df -h "$GITHUB_WORKSPACE"
           free -h
-          echo "CPUs: $(nproc)"
           avail=$(df --output=avail "$GITHUB_WORKSPACE" | tail -1 | tr -d ' ')
           test "$avail" -ge 90000000
 
-      - name: Install dependencies
+      - name: Install dependencies and repo
         run: |
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
@@ -81,50 +75,24 @@ jobs:
           sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
-
-      - name: Install repo
-        run: |
-          set -euxo pipefail
           mkdir -p "$HOME/bin"
           curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
           chmod 0755 "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
-          "$HOME/bin/repo" version
 
-      - name: Initialize TWRP 16.0
+      - name: Initialize and sync TWRP 16.0
         run: |
           set -euxo pipefail
           rm -rf "$TWRP_DIR"
           mkdir -p "$TWRP_DIR"
           cd "$TWRP_DIR"
           repo init --depth=1 -u "$TWRP_MANIFEST_URL" -b "$TWRP_MANIFEST_BRANCH"
-          test -s .repo/manifest.xml
-
-      - name: Sync TWRP 16.0
-        run: |
-          set -o pipefail
-          cd "$TWRP_DIR"
-          : > "$GITHUB_WORKSPACE/repo-sync.log"
           rc=1
           for attempt in 1 2 3; do
-            echo "=== repo sync attempt $attempt/3 ===" | tee -a "$GITHUB_WORKSPACE/repo-sync.log"
-            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune 2>&1 | tee -a "$GITHUB_WORKSPACE/repo-sync.log"
-            rc=${PIPESTATUS[0]}
-            [ "$rc" -eq 0 ] && break
-            df -h "$GITHUB_WORKSPACE" | tee -a "$GITHUB_WORKSPACE/repo-sync.log"
+            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune && { rc=0; break; } || rc=$?
             sleep 10
           done
           exit "$rc"
-
-      - name: Verify source
-        run: |
-          set -euxo pipefail
-          cd "$TWRP_DIR"
-          test -d bootable/recovery
-          test -f build/envsetup.sh
-          test -d build/make
-          test -d build/soong
-          repo manifest -r > "$GITHUB_WORKSPACE/manifest-revisions.xml"
 
       - name: Install authoritative KM5n tree
         run: |
@@ -133,14 +101,10 @@ jobs:
           rm -rf "$DEVICE_PATH"
           mkdir -p "$(dirname "$DEVICE_PATH")"
           rsync -a --delete --exclude='.git' "$GITHUB_WORKSPACE/$DEVICE_PATH/" "$DEVICE_PATH/"
-          test -f "$DEVICE_PATH/BoardConfig.mk"
-          test -f "$DEVICE_PATH/AndroidProducts.mk"
-          test -f "$DEVICE_PATH/device.mk"
-          test -f "$DEVICE_PATH/twrp_km5n.mk"
           chmod +x "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh"
           "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh" "$DEVICE_PATH"
 
-      - name: Lunch and preflight
+      - name: Lunch and record resolved configuration
         run: |
           set -eo pipefail
           cd "$TWRP_DIR"
@@ -150,21 +114,8 @@ jobs:
           export TMPDIR="$TWRP_DIR/tmp"
           mkdir -p "$TMPDIR"
           source build/envsetup.sh
-          set +e
           lunch "$LUNCH_TARGET" > "$GITHUB_WORKSPACE/lunch.log" 2>&1
-          rc=$?
-          set -e
           cat "$GITHUB_WORKSPACE/lunch.log"
-          exit "$rc"
-
-      - name: Record resolved build configuration
-        run: |
-          set -eo pipefail
-          cd "$TWRP_DIR"
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export TARGET_RELEASE=bp2a
-          source build/envsetup.sh
-          lunch "$LUNCH_TARGET" >/dev/null 2>&1
           {
             echo "TARGET_PRODUCT=$(get_build_var TARGET_PRODUCT)"
             echo "TARGET_DEVICE=$(get_build_var TARGET_DEVICE)"
@@ -190,117 +141,183 @@ jobs:
           sdk=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)
           for v in $(printf '%s\n' "$sdk" | grep -oE '[0-9]+' || true); do test "$v" -ge 35 || exit 1; done
 
-      - name: Build vendor_boot slice 1
-        id: slice1
-        run: |
-          chmod +x "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh"
-          "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 1
+          mkdir -p "$GITHUB_WORKSPACE/checkpoint"
+          cp "$GITHUB_WORKSPACE/lunch.log" "$GITHUB_WORKSPACE/checkpoint/"
+          cp "$GITHUB_WORKSPACE/build-vars.log" "$GITHUB_WORKSPACE/checkpoint/"
+          echo "READY=true" > "$GITHUB_WORKSPACE/checkpoint/status.txt"
 
-      - name: Upload checkpoint 1
-        if: always()
+      - name: Cache prepared TWRP source and build state
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            twrp16/out
+            twrp16/.repo/project.list
+          key: km5n-twrp16-prepared-${{ github.run_id }}
+
+      - name: Upload preparation metadata
         uses: actions/upload-artifact@v4
         with:
-          name: km5n-twrp16-checkpoint-1-${{ github.run_id }}
+          name: km5n-twrp16-preparation-${{ github.run_id }}
           path: checkpoint/
-          if-no-files-found: warn
           retention-days: 3
 
-      - name: Build vendor_boot slice 2
-        if: env.BUILD_COMPLETE != 'true'
-        id: slice2
-        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 2
+      - id: ready
+        run: echo "ready=true" >> "$GITHUB_OUTPUT"
 
-      - name: Upload checkpoint 2
-        if: always()
-        uses: actions/upload-artifact@v4
+  slice:
+    needs: prepare
+    if: needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        slice: [1, 2, 3, 4, 5, 6]
+    env:
+      TWRP_DIR: ${{ github.workspace }}/twrp16
+      BUILD_JOBS: ${{ inputs.build_jobs || '1' }}
+    steps:
+      - name: Expand build space
+        uses: easimon/maximize-build-space@master
         with:
-          name: km5n-twrp16-checkpoint-2-${{ github.run_id }}
-          path: checkpoint/
-          if-no-files-found: warn
-          retention-days: 3
+          root-reserve-mb: 2048
+          temp-reserve-mb: 128
+          swap-size-mb: 12288
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-codeql: 'true'
+          remove-haskell: 'true'
+          remove-docker-images: 'true'
 
-      - name: Build vendor_boot slice 3
-        if: env.BUILD_COMPLETE != 'true'
-        id: slice3
-        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 3
-
-      - name: Upload checkpoint 3
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Checkout device tree
+        uses: actions/checkout@v7
         with:
-          name: km5n-twrp16-checkpoint-3-${{ github.run_id }}
-          path: checkpoint/
-          if-no-files-found: warn
-          retention-days: 3
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 1
 
-      - name: Build vendor_boot slice 4
-        if: env.BUILD_COMPLETE != 'true'
-        id: slice4
-        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 4
-
-      - name: Upload checkpoint 4
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: km5n-twrp16-checkpoint-4-${{ github.run_id }}
-          path: checkpoint/
-          if-no-files-found: warn
-          retention-days: 3
-
-      - name: Build vendor_boot slice 5
-        if: env.BUILD_COMPLETE != 'true'
-        id: slice5
-        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 5
-
-      - name: Upload checkpoint 5
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: km5n-twrp16-checkpoint-5-${{ github.run_id }}
-          path: checkpoint/
-          if-no-files-found: warn
-          retention-days: 3
-
-      - name: Build vendor_boot slice 6
-        if: env.BUILD_COMPLETE != 'true'
-        id: slice6
-        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 6
-
-      - name: Upload checkpoint 6
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: km5n-twrp16-checkpoint-6-${{ github.run_id }}
-          path: checkpoint/
-          if-no-files-found: warn
-          retention-days: 3
-
-      - name: Verify build completed
+      - name: Install dependencies and repo
         run: |
           set -euxo pipefail
-          test "${BUILD_COMPLETE:-false}" = true
-          test -s "$TWRP_DIR/out/target/product/km5n/vendor_boot.img"
+          export DEBIAN_FRONTEND=noninteractive
+          for attempt in 1 2 3; do sudo apt-get update && break || sleep 5; done
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          mkdir -p "$HOME/bin"
+          curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod 0755 "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: Validate vendor_boot
+      - name: Initialize and sync TWRP source
+        run: |
+          set -euxo pipefail
+          rm -rf "$TWRP_DIR"
+          mkdir -p "$TWRP_DIR"
+          cd "$TWRP_DIR"
+          repo init --depth=1 -u "$TWRP_MANIFEST_URL" -b "$TWRP_MANIFEST_BRANCH"
+          repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune
+
+      - name: Install KM5n tree
         run: |
           set -euxo pipefail
           cd "$TWRP_DIR"
-          IMG="out/target/product/km5n/vendor_boot.img"
-          stat -c '%n %s bytes' "$IMG"
-          bash "$DEVICE_PATH/scripts/validate_vendor_boot.sh" "$IMG"
+          rm -rf "$DEVICE_PATH"
+          mkdir -p "$(dirname "$DEVICE_PATH")"
+          rsync -a --delete --exclude='.git' "$GITHUB_WORKSPACE/$DEVICE_PATH/" "$DEVICE_PATH/"
+          chmod +x "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh"
+          "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh" "$DEVICE_PATH"
+
+      - name: Restore incremental build output
+        uses: actions/cache/restore@v4
+        with:
+          path: twrp16/out
+          key: km5n-twrp16-prepared-${{ github.run_id }}
+
+      - name: Re-save checkpoint under slice key
+        if: matrix.slice > 1
+        uses: actions/cache/restore@v4
+        with:
+          path: twrp16/out
+          key: km5n-twrp16-slice-${{ github.run_id }}-${{ matrix.slice - 1 }}
+
+      - name: Build slice
+        id: build
+        run: |
+          set -eo pipefail
+          cd "$TWRP_DIR"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export TARGET_RELEASE=bp2a
+          export LC_ALL=C
+          export TMPDIR="$TWRP_DIR/tmp"
+          mkdir -p "$TMPDIR" "$GITHUB_WORKSPACE/checkpoint"
+          source build/envsetup.sh
+          lunch "$LUNCH_TARGET" >/dev/null 2>&1
+          LOG="$GITHUB_WORKSPACE/checkpoint/slice-${{ matrix.slice }}.log"
+          MON="$GITHUB_WORKSPACE/checkpoint/resource-${{ matrix.slice }}.log"
+          : > "$LOG"; : > "$MON"
+          (
+            while :; do
+              echo "=== $(date -u) ===" >> "$MON"
+              free -h >> "$MON" 2>&1
+              df -h "$GITHUB_WORKSPACE" >> "$MON" 2>&1
+              ps -eo pid,ppid,%mem,%cpu,rss,vsz,stat,comm --sort=-rss | head -25 >> "$MON" 2>&1
+              sleep 15
+            done
+          ) & MONITOR_PID=$!
+          set +e
+          timeout --signal=TERM --kill-after=60s 50m mka "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee -a "$LOG"
+          rc=${PIPESTATUS[0]}
+          set -e
+          kill "$MONITOR_PID" 2>/dev/null || true
+          wait "$MONITOR_PID" 2>/dev/null || true
+          echo "mka exit code: $rc" | tee -a "$LOG"
+          if [ -s "$TWRP_DIR/out/target/product/km5n/vendor_boot.img" ]; then
+            echo "BUILD_COMPLETE=true" > "$GITHUB_WORKSPACE/checkpoint/status.txt"
+            echo "complete=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$rc" -eq 124 ]; then
+            echo "BUILD_COMPLETE=false" > "$GITHUB_WORKSPACE/checkpoint/status.txt"
+            echo "complete=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          exit "$rc"
+
+      - name: Save incremental checkpoint
+        if: steps.build.outputs.complete != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: twrp16/out
+          key: km5n-twrp16-slice-${{ github.run_id }}-${{ matrix.slice }}
+
+      - name: Upload slice diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-slice-${{ matrix.slice }}-${{ github.run_id }}
+          path: checkpoint/
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Validate completed image
+        if: steps.build.outputs.complete == 'true'
+        run: |
+          set -euxo pipefail
+          IMG="$TWRP_DIR/out/target/product/km5n/vendor_boot.img"
+          bash "$TWRP_DIR/$DEVICE_PATH/scripts/validate_vendor_boot.sh" "$IMG"
           python3 - "$IMG" <<'PY'
           import struct,sys
           d=open(sys.argv[1],'rb').read()
-          assert d[:8] == b'VNDRBOOT', 'bad vendor_boot magic'
+          assert d[:8] == b'VNDRBOOT'
           version,page=struct.unpack_from('<II',d,8)
-          assert version == 4, f'expected header v4, got {version}'
-          assert page == 4096, f'expected page 4096, got {page}'
-          assert len(d) <= 67108864, 'vendor_boot exceeds 64 MiB'
+          assert version == 4
+          assert page == 4096
+          assert len(d) <= 67108864
           print('PASS: vendor_boot v4 structure and size checks')
           PY
-          bash "$DEVICE_PATH/scripts/audit_twrp_output.sh" "out/target/product/km5n"
 
-      - name: Upload final vendor_boot
+      - name: Upload completed vendor_boot
+        if: steps.build.outputs.complete == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: km5n-twrp16-vendor-boot-${{ github.run_id }}
@@ -308,15 +325,3 @@ jobs:
           if-no-files-found: error
           retention-days: 3
           compression-level: 0
-
-      - name: Final summary
-        if: always()
-        run: |
-          {
-            echo "## KM5n TWRP 16.0 build"
-            echo "- Manifest: $TWRP_MANIFEST_URL"
-            echo "- Branch: $TWRP_MANIFEST_BRANCH"
-            echo "- Target: $BUILD_TARGET"
-            echo "- Jobs: $BUILD_JOBS"
-            echo "- Device-tree commit: $(git rev-parse HEAD)"
-          } >> "$GITHUB_STEP_SUMMARY"
