@@ -1,0 +1,199 @@
+name: TWRP 16.0 vendor_boot slice
+
+on:
+  workflow_call:
+    inputs:
+      slice:
+        required: true
+        type: string
+      restore_key:
+        required: true
+        type: string
+      save_key:
+        required: true
+        type: string
+      build_jobs:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      TWRP_MANIFEST_URL: https://github.com/TWRP-Test/platform_manifest_twrp_aosp.git
+      TWRP_MANIFEST_BRANCH: twrp-16.0
+      TWRP_DIR: ${{ github.workspace }}/twrp16
+      DEVICE_PATH: device/tecno/km5n
+      LUNCH_TARGET: twrp_km5n-bp2a-eng
+      BUILD_TARGET: vendorbootimage
+      BUILD_JOBS: ${{ inputs.build_jobs }}
+      SLICE: ${{ inputs.slice }}
+
+    steps:
+      - name: Expand build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 2048
+          temp-reserve-mb: 128
+          swap-size-mb: 12288
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-codeql: 'true'
+          remove-haskell: 'true'
+          remove-docker-images: 'true'
+
+      - name: Checkout device tree
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 1
+
+      - name: Install dependencies and repo
+        run: |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          for attempt in 1 2 3; do sudo apt-get update && break || sleep 5; done
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          mkdir -p "$HOME/bin"
+          curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod 0755 "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Initialize and sync TWRP source
+        run: |
+          set -euxo pipefail
+          rm -rf "$TWRP_DIR"
+          mkdir -p "$TWRP_DIR"
+          cd "$TWRP_DIR"
+          repo init --depth=1 -u "$TWRP_MANIFEST_URL" -b "$TWRP_MANIFEST_BRANCH"
+          rc=1
+          for attempt in 1 2 3; do
+            repo sync -c -j1 --force-sync --no-clone-bundle --no-tags --optimized-fetch --retry-fetches=5 --prune && { rc=0; break; } || rc=$?
+            sleep 10
+          done
+          exit "$rc"
+
+      - name: Install authoritative KM5n tree
+        run: |
+          set -euxo pipefail
+          cd "$TWRP_DIR"
+          rm -rf "$DEVICE_PATH"
+          mkdir -p "$(dirname "$DEVICE_PATH")"
+          rsync -a --delete --exclude='.git' "$GITHUB_WORKSPACE/$DEVICE_PATH/" "$DEVICE_PATH/"
+          chmod +x "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh"
+          "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh" "$DEVICE_PATH"
+
+      - name: Restore previous incremental build state
+        uses: actions/cache/restore@v4
+        with:
+          path: twrp16/out
+          key: ${{ inputs.restore_key }}
+
+      - name: Check restored state
+        run: |
+          set -euxo pipefail
+          if [ -s "$TWRP_DIR/out/target/product/km5n/vendor_boot.img" ]; then
+            echo "vendor_boot already exists in restored state; no compilation is required."
+            echo "BUILD_COMPLETE=true" >> "$GITHUB_ENV"
+          else
+            echo "No completed vendor_boot in restored state; continuing compilation."
+          fi
+
+      - name: Build vendor_boot slice
+        if: env.BUILD_COMPLETE != 'true'
+        run: |
+          set -eo pipefail
+          cd "$TWRP_DIR"
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export TARGET_RELEASE=bp2a
+          export LC_ALL=C
+          export TMPDIR="$TWRP_DIR/tmp"
+          mkdir -p "$TMPDIR" "$GITHUB_WORKSPACE/checkpoint"
+          source build/envsetup.sh
+          lunch "$LUNCH_TARGET" >/dev/null 2>&1
+          LOG="$GITHUB_WORKSPACE/checkpoint/slice-${SLICE}.log"
+          MON="$GITHUB_WORKSPACE/checkpoint/resource-${SLICE}.log"
+          : > "$LOG"
+          : > "$MON"
+          echo "=== slice $SLICE start $(date -u) ===" | tee -a "$LOG"
+          echo "target=$BUILD_TARGET jobs=$BUILD_JOBS restore=${{ inputs.restore_key }} save=${{ inputs.save_key }}" | tee -a "$LOG"
+          (
+            while :; do
+              echo "=== $(date -u) ===" >> "$MON"
+              free -h >> "$MON" 2>&1
+              df -h "$GITHUB_WORKSPACE" >> "$MON" 2>&1
+              ps -eo pid,ppid,%mem,%cpu,rss,vsz,stat,comm --sort=-rss | head -25 >> "$MON" 2>&1
+              echo >> "$MON"
+              sleep 15
+            done
+          ) &
+          MONITOR_PID=$!
+          set +e
+          timeout --signal=TERM --kill-after=60s 45m mka "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee -a "$LOG"
+          RC=${PIPESTATUS[0]}
+          set -e
+          kill "$MONITOR_PID" 2>/dev/null || true
+          wait "$MONITOR_PID" 2>/dev/null || true
+          echo "mka exit code: $RC" | tee -a "$LOG"
+          echo "=== slice $SLICE end $(date -u) ===" | tee -a "$LOG"
+          IMG="$TWRP_DIR/out/target/product/km5n/vendor_boot.img"
+          if [ -s "$IMG" ]; then
+            echo "BUILD_COMPLETE=true" > "$GITHUB_WORKSPACE/checkpoint/status.txt"
+            echo "BUILD_COMPLETE=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "BUILD_COMPLETE=false" > "$GITHUB_WORKSPACE/checkpoint/status.txt"
+          if [ "$RC" -eq 124 ]; then
+            echo "Checkpoint: 45-minute slice completed; incremental output will be saved for the next job." | tee -a "$LOG"
+            exit 0
+          fi
+          exit "$RC"
+
+      - name: Save incremental build state
+        if: env.BUILD_COMPLETE != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: twrp16/out
+          key: ${{ inputs.save_key }}
+
+      - name: Upload slice diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-slice-${{ inputs.slice }}-${{ github.run_id }}
+          path: checkpoint/
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Validate completed vendor_boot
+        if: env.BUILD_COMPLETE == 'true'
+        run: |
+          set -euxo pipefail
+          IMG="$TWRP_DIR/out/target/product/km5n/vendor_boot.img"
+          bash "$TWRP_DIR/$DEVICE_PATH/scripts/validate_vendor_boot.sh" "$IMG"
+          python3 - "$IMG" <<'PY'
+          import struct,sys
+          d=open(sys.argv[1],'rb').read()
+          assert d[:8] == b'VNDRBOOT', 'bad vendor_boot magic'
+          version,page=struct.unpack_from('<II',d,8)
+          assert version == 4, f'expected header v4, got {version}'
+          assert page == 4096, f'expected page 4096, got {page}'
+          assert len(d) <= 67108864, 'vendor_boot exceeds 64 MiB'
+          print('PASS: vendor_boot v4 structure and size checks')
+          PY
+
+      - name: Upload completed vendor_boot
+        if: env.BUILD_COMPLETE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-vendor-boot-${{ github.run_id }}
+          path: twrp16/out/target/product/km5n/vendor_boot.img
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
