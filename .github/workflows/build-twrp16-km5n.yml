@@ -4,15 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       build_jobs:
-        description: "Parallel build jobs (1-4). Use 2 for the safest memory profile."
+        description: "Parallel build jobs (1-2). Use 1 for the safest memory profile."
         required: true
-        default: "2"
+        default: "1"
         type: choice
         options:
           - "1"
           - "2"
-          - "3"
-          - "4"
 
 permissions:
   contents: read
@@ -32,7 +30,7 @@ jobs:
       DEVICE_PATH: device/tecno/km5n
       LUNCH_TARGET: twrp_km5n-bp2a-eng
       BUILD_TARGET: vendorbootimage
-      BUILD_JOBS: ${{ inputs.build_jobs || '2' }}
+      BUILD_JOBS: ${{ inputs.build_jobs || '1' }}
 
     steps:
       - name: Expand build space
@@ -40,7 +38,7 @@ jobs:
         with:
           root-reserve-mb: 2048
           temp-reserve-mb: 128
-          swap-size-mb: 4096
+          swap-size-mb: 8192
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-codeql: 'true'
@@ -233,10 +231,29 @@ jobs:
           echo "Build start: $(date -u)"
           df -h "$GITHUB_WORKSPACE"
           free -h
+          echo "Build jobs: $BUILD_JOBS"
+          echo "The build is intentionally resource-conservative; increase to 2 only if a single-job build is stable."
+
+          monitor="$GITHUB_WORKSPACE/build-resource-monitor.log"
+          (
+            while kill -0 $$ 2>/dev/null; do
+              echo "=== $(date -u) ===" >> "$monitor"
+              free -h >> "$monitor" 2>&1
+              df -h "$GITHUB_WORKSPACE" >> "$monitor" 2>&1
+              ps -eo pid,ppid,%mem,%cpu,rss,vsz,stat,comm --sort=-rss | head -25 >> "$monitor" 2>&1
+              echo >> "$monitor"
+              sleep 20
+            done
+          ) &
+          monitor_pid=$!
+
           set +e
           mka adbd "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/twrp-build.log"
           rc=${PIPESTATUS[0]}
           set -e
+
+          kill "$monitor_pid" 2>/dev/null || true
+          wait "$monitor_pid" 2>/dev/null || true
           echo "mka exit code: $rc"
           echo "Build end: $(date -u)"
           exit "$rc"
@@ -283,6 +300,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/lunch-build.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/build-vars.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/twrp-build.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/build-resource-monitor.log" "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
           if [ -f "$GITHUB_WORKSPACE/twrp-build.log" ]; then
             grep -E '(^| )(error:|ERROR|FAILED|fatal:|ninja:|No rule to make target|undefined reference|ld.lld:|Killed|No space left|out of memory|cc1:|clang:)' "$GITHUB_WORKSPACE/twrp-build.log" | tail -300 > "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" || true
             tail -300 "$GITHUB_WORKSPACE/twrp-build.log" > "$GITHUB_WORKSPACE/diagnostics/build-tail.txt" || true
