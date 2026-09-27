@@ -190,53 +190,102 @@ jobs:
           sdk=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)
           for v in $(printf '%s\n' "$sdk" | grep -oE '[0-9]+' || true); do test "$v" -ge 35 || exit 1; done
 
-      - name: Build KM5n vendor_boot
-        id: build
+      - name: Build vendor_boot slice 1
+        id: slice1
         run: |
-          set -eo pipefail
-          cd "$TWRP_DIR"
-          export ALLOW_MISSING_DEPENDENCIES=true
-          export TARGET_RELEASE=bp2a
-          export LC_ALL=C
-          export TMPDIR="$TWRP_DIR/tmp"
-          mkdir -p "$TMPDIR"
-          source build/envsetup.sh
-          lunch "$LUNCH_TARGET" > "$GITHUB_WORKSPACE/lunch-build.log" 2>&1
-          echo "Build start: $(date -u)"
-          free -h
-          df -h "$GITHUB_WORKSPACE"
-          echo "Build target: $BUILD_TARGET"
-          echo "Ninja jobs: $BUILD_JOBS"
-          echo "Important: adbd is no longer built as a separate target; this run builds only vendorbootimage."
-          monitor="$GITHUB_WORKSPACE/build-resource-monitor.log"
-          (
-            while :; do
-              echo "=== $(date -u) ===" >> "$monitor"
-              free -h >> "$monitor" 2>&1
-              df -h "$GITHUB_WORKSPACE" >> "$monitor" 2>&1
-              ps -eo pid,ppid,%mem,%cpu,rss,vsz,stat,comm --sort=-rss | head -25 >> "$monitor" 2>&1
-              echo >> "$monitor"
-              sleep 15
-            done
-          ) &
-          monitor_pid=$!
-          set +e
-          mka "$BUILD_TARGET" -j"$BUILD_JOBS" 2>&1 | tee "$GITHUB_WORKSPACE/twrp-build.log"
-          rc=${PIPESTATUS[0]}
-          set -e
-          kill "$monitor_pid" 2>/dev/null || true
-          wait "$monitor_pid" 2>/dev/null || true
-          echo "mka exit code: $rc"
-          echo "Build end: $(date -u)"
-          exit "$rc"
+          chmod +x "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh"
+          "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 1
+
+      - name: Upload checkpoint 1
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-checkpoint-1-${{ github.run_id }}
+          path: checkpoint/
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Build vendor_boot slice 2
+        if: env.BUILD_COMPLETE != 'true'
+        id: slice2
+        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 2
+
+      - name: Upload checkpoint 2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-checkpoint-2-${{ github.run_id }}
+          path: checkpoint/
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Build vendor_boot slice 3
+        if: env.BUILD_COMPLETE != 'true'
+        id: slice3
+        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 3
+
+      - name: Upload checkpoint 3
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-checkpoint-3-${{ github.run_id }}
+          path: checkpoint/
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Build vendor_boot slice 4
+        if: env.BUILD_COMPLETE != 'true'
+        id: slice4
+        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 4
+
+      - name: Upload checkpoint 4
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-checkpoint-4-${{ github.run_id }}
+          path: checkpoint/
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Build vendor_boot slice 5
+        if: env.BUILD_COMPLETE != 'true'
+        id: slice5
+        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 5
+
+      - name: Upload checkpoint 5
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-checkpoint-5-${{ github.run_id }}
+          path: checkpoint/
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Build vendor_boot slice 6
+        if: env.BUILD_COMPLETE != 'true'
+        id: slice6
+        run: "$DEVICE_PATH/scripts/build_vendor_boot_slice.sh" 6
+
+      - name: Upload checkpoint 6
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-checkpoint-6-${{ github.run_id }}
+          path: checkpoint/
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Verify build completed
+        run: |
+          set -euxo pipefail
+          test "${BUILD_COMPLETE:-false}" = true
+          test -s "$TWRP_DIR/out/target/product/km5n/vendor_boot.img"
 
       - name: Validate vendor_boot
-        if: steps.build.outcome == 'success'
         run: |
           set -euxo pipefail
           cd "$TWRP_DIR"
           IMG="out/target/product/km5n/vendor_boot.img"
-          test -s "$IMG"
           stat -c '%n %s bytes' "$IMG"
           bash "$DEVICE_PATH/scripts/validate_vendor_boot.sh" "$IMG"
           python3 - "$IMG" <<'PY'
@@ -251,37 +300,7 @@ jobs:
           PY
           bash "$DEVICE_PATH/scripts/audit_twrp_output.sh" "out/target/product/km5n"
 
-      - name: Collect diagnostics
-        if: always()
-        run: |
-          set +e
-          mkdir -p "$GITHUB_WORKSPACE/diagnostics"
-          cp "$GITHUB_WORKSPACE"/{repo-sync.log,lunch.log,lunch-build.log,build-vars.log,twrp-build.log,build-resource-monitor.log} "$GITHUB_WORKSPACE/diagnostics/" 2>/dev/null || true
-          if [ -f "$GITHUB_WORKSPACE/twrp-build.log" ]; then
-            grep -E '(^| )(error:|ERROR|FAILED|fatal:|ninja:|No rule to make target|undefined reference|ld.lld:|Killed|No space left|out of memory|cc1:|clang:)' "$GITHUB_WORKSPACE/twrp-build.log" | tail -300 > "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" || true
-            tail -300 "$GITHUB_WORKSPACE/twrp-build.log" > "$GITHUB_WORKSPACE/diagnostics/build-tail.txt" || true
-          fi
-          {
-            echo "UTC: $(date -u)"
-            uname -a
-            nproc
-            free -h
-            df -h "$GITHUB_WORKSPACE"
-          } > "$GITHUB_WORKSPACE/diagnostics/runner.txt" 2>&1
-          echo "=== error summary ==="
-          cat "$GITHUB_WORKSPACE/diagnostics/error-summary.txt" 2>/dev/null || true
-
-      - name: Upload diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: km5n-twrp16-diagnostics-${{ github.run_id }}
-          path: diagnostics/
-          if-no-files-found: warn
-          retention-days: 3
-
-      - name: Upload vendor_boot
-        if: steps.build.outcome == 'success'
+      - name: Upload final vendor_boot
         uses: actions/upload-artifact@v4
         with:
           name: km5n-twrp16-vendor-boot-${{ github.run_id }}
