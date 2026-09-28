@@ -2,11 +2,13 @@ DEVICE_PATH := device/tecno/km5n
 TARGET_ARCH := arm64
 TARGET_ARCH_VARIANT := armv8-a
 TARGET_CPU_VARIANT := generic
+TARGET_CPU_VARIANT_RUNTIME := cortex-a55
 TARGET_CPU_ABI := arm64-v8a
 TARGET_SUPPORTS_64_BIT_APPS := true
 TARGET_BOARD_PLATFORM := mt6768
 TARGET_BOOTLOADER_BOARD_NAME := mt6768
 TARGET_NO_BOOTLOADER := true
+TARGET_NO_KERNEL := true
 BOARD_USES_GENERIC_KERNEL_IMAGE := true
 BOARD_EXCLUDE_KERNEL_FROM_RECOVERY_IMAGE := true
 ALLOW_MISSING_DEPENDENCIES := true
@@ -16,10 +18,12 @@ BUILD_BROKEN_DUP_RULES := true
 BUILD_BROKEN_ELF_PREBUILT_PRODUCT_COPY_FILES := true
 
 # KM5n uses Android boot header v4 with recovery carried by vendor_boot.
+# This matches the proven TeamWin MT6768/X6532 vendor_boot architecture.
 BOARD_BOOT_HEADER_VERSION := 4
 BOARD_KERNEL_PAGESIZE := 4096
+BOARD_PAGE_SIZE := $(BOARD_KERNEL_PAGESIZE)
 BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOT_HEADER_VERSION)
-BOARD_MKBOOTIMG_ARGS += --pagesize $(BOARD_KERNEL_PAGESIZE)
+BOARD_MKBOOTIMG_ARGS += --pagesize $(BOARD_PAGE_SIZE)
 BOARD_RAMDISK_USE_LZ4 := true
 BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true
 BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT := true
@@ -44,8 +48,6 @@ BOARD_SYSTEM_DLKMIMAGE_FILE_SYSTEM_TYPE := erofs
 BOARD_VENDOR_DLKMIMAGE_FILE_SYSTEM_TYPE := erofs
 BOARD_ODM_DLKMIMAGE_FILE_SYSTEM_TYPE := erofs
 
-# Dynamic partitions are a product-level property; Android 15 makes this
-# variable readonly during BoardConfig evaluation, so it belongs in device.mk.
 BOARD_USES_METADATA_PARTITION := true
 TARGET_USERIMAGES_USE_F2FS := true
 BOARD_USERDATAIMAGE_FILE_SYSTEM_TYPE := f2fs
@@ -57,14 +59,10 @@ BOARD_DTBOIMG_PARTITION_SIZE := 8388608
 BOARD_INIT_BOOT_IMAGE_PARTITION_SIZE := 8388608
 BOARD_VENDOR_BOOTIMAGE_PARTITION_SIZE := 67108864
 BOARD_VENDOR_DLKMIMAGE_PARTITION_SIZE := 13807616
-# Android convention: kernel page size * 64, not the 4 KiB page size itself.
 BOARD_FLASH_BLOCK_SIZE := 262144
 
-# Do not pin BOARD_SYSTEMSDK_VERSIONS here.  PRODUCT_SHIPPING_API_LEVEL=35
-# describes the device/vendor interface level, while TWRP 16 itself is an
-# Android 16 platform and must retain its current system SDK (system_current).
-# Android build/make supplies the appropriate board System SDK automatically
-# when this variable is unset.
+# Do not pin BOARD_SYSTEMSDK_VERSIONS here. TWRP 16 is an Android 16
+# platform while the device/vendor interface is API 35.
 
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/system/etc/recovery.fstab
 TARGET_RECOVERY_PIXEL_FORMAT := RGBX_8888
@@ -74,9 +72,8 @@ TARGET_SCREEN_DENSITY := 280
 TW_THEME := portrait_hdpi
 TW_DEVICE_VERSION := KM5n-TWRP-16-MT6768
 
-# Stock userdata is metadata-encrypted FBE.  The stock crypto stack is
-# Trustonic KeyMint 3.0, not legacy Keymaster 4.x, so do not force a
-# Keymaster 4.x implementation into this Android 15 recovery.
+# Stock userdata is metadata-encrypted FBE. The stock crypto stack is
+# Trustonic KeyMint, so do not force a legacy Keymaster implementation.
 TW_INCLUDE_CRYPTO := true
 TW_INCLUDE_CRYPTO_FBE := true
 TW_INCLUDE_FBE := true
@@ -95,7 +92,6 @@ TW_NO_LEGACY_PROPS := true
 TW_SCREEN_BLANK_ON_BOOT := true
 TW_USE_MODEL_HARDWARE_ID_FOR_DEVICE_ID := true
 
-# Stock vendor_boot recovery ramdisk modules.
 TW_LOAD_VENDOR_MODULES := $(shell find $(DEVICE_PATH)/recovery/root/lib/modules -maxdepth 1 -name "*.ko" -printf "%f ")
 
 TARGET_USES_MKE2FS := true
