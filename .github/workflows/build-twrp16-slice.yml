@@ -171,7 +171,7 @@ jobs:
           ) &
           MONITOR_PID=$!
           set +e
-          timeout --signal=TERM --kill-after=60s 45m bash -c 'source build/envsetup.sh; export ALLOW_MISSING_DEPENDENCIES=true TARGET_RELEASE=bp2a LC_ALL=C TMPDIR="$PWD/tmp" USE_CCACHE=1 CCACHE_EXEC="$(command -v ccache || true)" CCACHE_DIR="$PWD/.ccache" GOMAXPROCS=2 NINJA_ARGS=-j1 NINJA_EXTRA_ARGS=-j1 NINJA_HIGHMEM_NUM_JOBS=1 MALLOC_ARENA_MAX=2; lunch "$LUNCH_TARGET" >/dev/null 2>&1; mka "$BUILD_TARGET" -j1' 2>&1 | tee -a "$LOG"
+          timeout --foreground --signal=TERM --kill-after=60s 45m bash -c 'source build/envsetup.sh; export ALLOW_MISSING_DEPENDENCIES=true TARGET_RELEASE=bp2a LC_ALL=C TMPDIR="$PWD/tmp" USE_CCACHE=1 CCACHE_EXEC="$(command -v ccache || true)" CCACHE_DIR="$PWD/.ccache" GOMAXPROCS=2 NINJA_ARGS=-j1 NINJA_EXTRA_ARGS=-j1 NINJA_HIGHMEM_NUM_JOBS=1 MALLOC_ARENA_MAX=2; lunch "$LUNCH_TARGET" >/dev/null 2>&1; mka "$BUILD_TARGET" -j1' 2>&1 | tee -a "$LOG"
           RC=${PIPESTATUS[0]}
           set -e
           kill "$MONITOR_PID" 2>/dev/null || true
@@ -185,8 +185,8 @@ jobs:
             exit 0
           fi
           echo "BUILD_COMPLETE=false" > "$GITHUB_WORKSPACE/checkpoint/status.txt"
-          if [ "$RC" -eq 124 ]; then
-            echo "Checkpoint: 45-minute slice completed; incremental output will be saved for the next job." | tee -a "$LOG"
+          if [ "$RC" -eq 124 ] || [ "$RC" -eq 143 ]; then
+            echo "Checkpoint: 45-minute slice ended by the watchdog; incremental output will be saved for the next job." | tee -a "$LOG"
             exit 0
           fi
           exit "$RC"
