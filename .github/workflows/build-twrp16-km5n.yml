@@ -27,11 +27,12 @@ env:
   BUILD_TARGET: vendorbootimage
 
 jobs:
-  prepare:
+  build:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     steps:
-      - uses: easimon/maximize-build-space@master
+      - name: Expand build space
+        uses: easimon/maximize-build-space@master
         with:
           root-reserve-mb: 2048
           temp-reserve-mb: 128
@@ -41,15 +42,19 @@ jobs:
           remove-codeql: 'true'
           remove-haskell: 'true'
           remove-docker-images: 'true'
-      - uses: actions/checkout@v7
+
+      - name: Checkout device tree
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.workflow_sha }}
           fetch-depth: 1
+
       - name: Audit KM5n tree
         run: |
           set -euxo pipefail
           chmod +x "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh"
           "$DEVICE_PATH/scripts/audit_twrp16_compatibility.sh" "$DEVICE_PATH"
+
       - name: Verify runner capacity
         run: |
           set -euxo pipefail
@@ -58,18 +63,40 @@ jobs:
           df -h "$GITHUB_WORKSPACE"
           free -h
           test "$(df --output=avail "$GITHUB_WORKSPACE" | tail -1 | tr -d ' ')" -ge 90000000
+
       - name: Install dependencies and repo
         run: |
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
           for attempt in 1 2 3; do sudo apt-get update && break || sleep 5; done
-          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev
+          sudo apt-get install -y --no-install-recommends openjdk-17-jdk-headless bc bison build-essential curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick lib32ncurses6 lib32z1 libelf-dev liblz4-tool libncurses-dev libssl-dev libxml2-utils lzop pngcrush python3 python3-pip python3-setuptools rsync unzip xsltproc zip zlib1g-dev ccache
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           mkdir -p "$HOME/bin"
           curl -fsSL --retry 8 --retry-all-errors --retry-delay 3 https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
           chmod 0755 "$HOME/bin/repo"
           echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Configure memory profile
+        run: |
+          set -euxo pipefail
+          echo 'GOMAXPROCS=2' >> "$GITHUB_ENV"
+          echo 'NINJA_ARGS=-j1' >> "$GITHUB_ENV"
+          echo 'NINJA_EXTRA_ARGS=-j1' >> "$GITHUB_ENV"
+          echo 'NINJA_HIGHMEM_NUM_JOBS=1' >> "$GITHUB_ENV"
+          echo 'MALLOC_ARENA_MAX=2' >> "$GITHUB_ENV"
+          free -h
+          swapon --show
+          if sudo modprobe zram 2>/dev/null; then command -v zramctl >/dev/null 2>&1 && zramctl || true; else echo 'zram unavailable; using disk-backed swap.'; fi
+
+      - name: Restore compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        continue-on-error: true
+        with:
+          create-symlink: true
+          max-size: 5G
+          update-package-index: true
+
       - name: Initialize and sync TWRP 16.0
         run: |
           set -euxo pipefail
@@ -82,7 +109,8 @@ jobs:
             sleep 10
           done
           exit "$rc"
-      - name: Install tree and preflight
+
+      - name: Install authoritative KM5n tree and preflight
         run: |
           set -eo pipefail
           cd twrp16
@@ -106,62 +134,78 @@ jobs:
           test "$(get_build_var TARGET_NO_RECOVERY)" = true
           sdk=$(get_build_var BOARD_SYSTEMSDK_VERSIONS)
           for v in $(printf '%s\n' "$sdk" | grep -oE '[0-9]+' || true); do test "$v" -ge 35; done
-      - name: Cache prepared output
-        uses: actions/cache/save@v4
+
+      - name: Build vendor_boot with full diagnostics
+        run: |
+          set -eo pipefail
+          cd twrp16
+          export ALLOW_MISSING_DEPENDENCIES=true TARGET_RELEASE=bp2a LC_ALL=C
+          export TMPDIR="$PWD/tmp" USE_CCACHE=1 CCACHE_EXEC="$(command -v ccache || true)" CCACHE_DIR="$PWD/.ccache"
+          mkdir -p "$TMPDIR" "$GITHUB_WORKSPACE/diagnostics"
+          source build/envsetup.sh
+          lunch "$LUNCH_TARGET"
+          LOG="$GITHUB_WORKSPACE/diagnostics/vendorboot-build.log"
+          MON="$GITHUB_WORKSPACE/diagnostics/resource-monitor.log"
+          : > "$LOG"; : > "$MON"
+          echo "=== KM5n TWRP 16 vendor_boot build ===" | tee -a "$LOG"
+          echo "target=$BUILD_TARGET jobs=${{ inputs.build_jobs }}" | tee -a "$LOG"
+          (
+            while :; do
+              echo "=== $(date -u) ===" >> "$MON"
+              free -h >> "$MON" 2>&1
+              swapon --show >> "$MON" 2>&1
+              df -h "$GITHUB_WORKSPACE" >> "$MON" 2>&1
+              ps -eo pid,ppid,%mem,%cpu,rss,vsz,stat,comm,args --sort=-rss | head -30 >> "$MON" 2>&1
+              echo >> "$MON"
+              sleep 10
+            done
+          ) &
+          MONITOR_PID=$!
+          set +e
+          mka "$BUILD_TARGET" -j1 2>&1 | tee -a "$LOG"
+          RC=${PIPESTATUS[0]}
+          set -e
+          kill "$MONITOR_PID" 2>/dev/null || true
+          wait "$MONITOR_PID" 2>/dev/null || true
+          echo "mka exit code: $RC" | tee -a "$LOG"
+          if [ "$RC" -ne 0 ]; then
+            echo '=== kernel/build diagnostics ===' | tee -a "$LOG"
+            dmesg -T 2>/dev/null | tail -200 | tee -a "$LOG" || true
+            find "$PWD/out" -maxdepth 5 -type f \( -name '*.log' -o -name 'build.ninja' -o -name 'soong.log' \) -printf '%p\n' 2>/dev/null | head -100 | tee -a "$LOG" || true
+            exit "$RC"
+          fi
+          test -s "out/target/product/km5n/vendor_boot.img"
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          path: twrp16/out
-          key: km5n-twrp16-prepared-${{ github.run_id }}
+          name: km5n-twrp16-build-diagnostics-${{ github.run_id }}
+          path: diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
 
-  slice1:
-    needs: prepare
-    uses: ./.github/workflows/build-twrp16-slice.yml
-    with:
-      slice: "1"
-      restore_key: km5n-twrp16-prepared-${{ github.run_id }}
-      save_key: km5n-twrp16-slice-1-${{ github.run_id }}
-      build_jobs: ${{ inputs.build_jobs }}
+      - name: Validate vendor_boot
+        run: |
+          set -euxo pipefail
+          IMG="twrp16/out/target/product/km5n/vendor_boot.img"
+          bash "twrp16/$DEVICE_PATH/scripts/validate_vendor_boot.sh" "$IMG"
+          python3 - "$IMG" <<'PY'
+          import struct,sys
+          d=open(sys.argv[1],'rb').read()
+          assert d[:8] == b'VNDRBOOT', 'bad vendor_boot magic'
+          version,page=struct.unpack_from('<II',d,8)
+          assert version == 4, f'expected header v4, got {version}'
+          assert page == 4096, f'expected page 4096, got {page}'
+          assert len(d) <= 67108864, 'vendor_boot exceeds 64 MiB'
+          print('PASS: vendor_boot v4 structure and size checks')
+          PY
 
-  slice2:
-    needs: slice1
-    uses: ./.github/workflows/build-twrp16-slice.yml
-    with:
-      slice: "2"
-      restore_key: km5n-twrp16-slice-1-${{ github.run_id }}
-      save_key: km5n-twrp16-slice-2-${{ github.run_id }}
-      build_jobs: ${{ inputs.build_jobs }}
-
-  slice3:
-    needs: slice2
-    uses: ./.github/workflows/build-twrp16-slice.yml
-    with:
-      slice: "3"
-      restore_key: km5n-twrp16-slice-2-${{ github.run_id }}
-      save_key: km5n-twrp16-slice-3-${{ github.run_id }}
-      build_jobs: ${{ inputs.build_jobs }}
-
-  slice4:
-    needs: slice3
-    uses: ./.github/workflows/build-twrp16-slice.yml
-    with:
-      slice: "4"
-      restore_key: km5n-twrp16-slice-3-${{ github.run_id }}
-      save_key: km5n-twrp16-slice-4-${{ github.run_id }}
-      build_jobs: ${{ inputs.build_jobs }}
-
-  slice5:
-    needs: slice4
-    uses: ./.github/workflows/build-twrp16-slice.yml
-    with:
-      slice: "5"
-      restore_key: km5n-twrp16-slice-4-${{ github.run_id }}
-      save_key: km5n-twrp16-slice-5-${{ github.run_id }}
-      build_jobs: ${{ inputs.build_jobs }}
-
-  slice6:
-    needs: slice5
-    uses: ./.github/workflows/build-twrp16-slice.yml
-    with:
-      slice: "6"
-      restore_key: km5n-twrp16-slice-5-${{ github.run_id }}
-      save_key: km5n-twrp16-slice-6-${{ github.run_id }}
-      build_jobs: ${{ inputs.build_jobs }}
+      - name: Upload vendor_boot
+        uses: actions/upload-artifact@v4
+        with:
+          name: km5n-twrp16-vendor-boot-${{ github.run_id }}
+          path: twrp16/out/target/product/km5n/vendor_boot.img
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
