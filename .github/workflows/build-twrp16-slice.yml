@@ -1,4 +1,4 @@
-name: TWRP 16.0 vendor_boot slice
+name: TWRP 16.0 vendor_boot build
 
 on:
   workflow_call:
@@ -81,12 +81,10 @@ jobs:
           echo '=== Memory profile ==='
           free -h
           swapon --show
-          echo '=== zram availability ==='
           if sudo modprobe zram 2>/dev/null; then
-            if command -v zramctl >/dev/null 2>&1; then zramctl || true; fi
-            echo 'zram module available; existing runner swap remains authoritative.'
+            command -v zramctl >/dev/null 2>&1 && zramctl || true
           else
-            echo 'zram module unavailable on this runner; continuing with disk-backed swap.'
+            echo 'zram unavailable; using disk-backed swap.'
           fi
 
       - name: Restore compiler cache
@@ -134,10 +132,10 @@ jobs:
             echo "vendor_boot already exists in restored state; no compilation is required."
             echo "BUILD_COMPLETE=true" >> "$GITHUB_ENV"
           else
-            echo "No completed vendor_boot in restored state; continuing compilation."
+            echo "No completed vendor_boot in restored state; continuing full build."
           fi
 
-      - name: Build vendor_boot slice
+      - name: Build vendor_boot
         if: env.BUILD_COMPLETE != 'true'
         run: |
           set -eo pipefail
@@ -149,63 +147,52 @@ jobs:
           export USE_CCACHE=1
           export CCACHE_EXEC="$(command -v ccache || true)"
           export CCACHE_DIR="$TWRP_DIR/.ccache"
-          mkdir -p "$TMPDIR" "$GITHUB_WORKSPACE/checkpoint"
+          mkdir -p "$TMPDIR" "$GITHUB_WORKSPACE/diagnostics"
           source build/envsetup.sh
-          lunch "$LUNCH_TARGET" >/dev/null 2>&1
-          LOG="$GITHUB_WORKSPACE/checkpoint/slice-${SLICE}.log"
-          MON="$GITHUB_WORKSPACE/checkpoint/resource-${SLICE}.log"
+          lunch "$LUNCH_TARGET"
+          LOG="$GITHUB_WORKSPACE/diagnostics/vendorboot-build.log"
+          MON="$GITHUB_WORKSPACE/diagnostics/resource-monitor.log"
           : > "$LOG"
           : > "$MON"
-          echo "=== slice $SLICE start $(date -u) ===" | tee -a "$LOG"
-          echo "target=$BUILD_TARGET jobs=$BUILD_JOBS restore=${{ inputs.restore_key }} save=${{ inputs.save_key }}" | tee -a "$LOG"
+          echo "=== KM5n TWRP 16 vendor_boot build ===" | tee -a "$LOG"
+          echo "target=$BUILD_TARGET jobs=$BUILD_JOBS" | tee -a "$LOG"
           (
             while :; do
               echo "=== $(date -u) ===" >> "$MON"
               free -h >> "$MON" 2>&1
               swapon --show >> "$MON" 2>&1
               df -h "$GITHUB_WORKSPACE" >> "$MON" 2>&1
-              ps -eo pid,ppid,%mem,%cpu,rss,vsz,stat,comm --sort=-rss | head -25 >> "$MON" 2>&1
+              ps -eo pid,ppid,%mem,%cpu,rss,vsz,stat,comm,args --sort=-rss | head -30 >> "$MON" 2>&1
               echo >> "$MON"
-              sleep 15
+              sleep 10
             done
           ) &
           MONITOR_PID=$!
           set +e
-          timeout --foreground --signal=TERM --kill-after=60s 45m bash -c 'source build/envsetup.sh; export ALLOW_MISSING_DEPENDENCIES=true TARGET_RELEASE=bp2a LC_ALL=C TMPDIR="$PWD/tmp" USE_CCACHE=1 CCACHE_EXEC="$(command -v ccache || true)" CCACHE_DIR="$PWD/.ccache" GOMAXPROCS=2 NINJA_ARGS=-j1 NINJA_EXTRA_ARGS=-j1 NINJA_HIGHMEM_NUM_JOBS=1 MALLOC_ARENA_MAX=2; lunch "$LUNCH_TARGET" >/dev/null 2>&1; mka "$BUILD_TARGET" -j1' 2>&1 | tee -a "$LOG"
+          mka "$BUILD_TARGET" -j1 2>&1 | tee -a "$LOG"
           RC=${PIPESTATUS[0]}
           set -e
           kill "$MONITOR_PID" 2>/dev/null || true
           wait "$MONITOR_PID" 2>/dev/null || true
           echo "mka exit code: $RC" | tee -a "$LOG"
-          echo "=== slice $SLICE end $(date -u) ===" | tee -a "$LOG"
+          if [ "$RC" -ne 0 ]; then
+            echo '=== likely failure diagnostics ===' | tee -a "$LOG"
+            dmesg -T 2>/dev/null | tail -200 | tee -a "$LOG" || true
+            find "$TWRP_DIR/out" -maxdepth 5 -type f \( -name '*.log' -o -name 'build.ninja' -o -name 'soong.log' \) -printf '%p\n' 2>/dev/null | head -100 | tee -a "$LOG" || true
+            exit "$RC"
+          fi
           IMG="$TWRP_DIR/out/target/product/km5n/vendor_boot.img"
-          if [ -s "$IMG" ]; then
-            echo "BUILD_COMPLETE=true" > "$GITHUB_WORKSPACE/checkpoint/status.txt"
-            echo "BUILD_COMPLETE=true" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          echo "BUILD_COMPLETE=false" > "$GITHUB_WORKSPACE/checkpoint/status.txt"
-          if [ "$RC" -eq 124 ] || [ "$RC" -eq 143 ]; then
-            echo "Checkpoint: 45-minute slice ended by the watchdog; incremental output will be saved for the next job." | tee -a "$LOG"
-            exit 0
-          fi
-          exit "$RC"
+          test -s "$IMG"
+          echo "BUILD_COMPLETE=true" >> "$GITHUB_ENV"
 
-      - name: Save incremental build state
-        if: env.BUILD_COMPLETE != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: twrp16/out
-          key: ${{ inputs.save_key }}
-
-      - name: Upload slice diagnostics
+      - name: Upload diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: km5n-twrp16-slice-${{ inputs.slice }}-${{ github.run_id }}
-          path: checkpoint/
+          name: km5n-twrp16-build-diagnostics-${{ github.run_id }}
+          path: diagnostics/
           if-no-files-found: warn
-          retention-days: 3
+          retention-days: 7
 
       - name: Validate completed vendor_boot
         if: env.BUILD_COMPLETE == 'true'
@@ -231,5 +218,5 @@ jobs:
           name: km5n-twrp16-vendor-boot-${{ github.run_id }}
           path: twrp16/out/target/product/km5n/vendor_boot.img
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7
           compression-level: 0
