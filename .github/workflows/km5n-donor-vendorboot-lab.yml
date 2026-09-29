@@ -1,0 +1,80 @@
+name: KM5n Donor vendor_boot Lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_name:
+        description: 'Test label'
+        required: true
+        default: 'baseline'
+      modification:
+        description: 'Modification to apply'
+        required: true
+        type: choice
+        options:
+          - none
+          - inspect-only
+          - ueventd-only
+          - touch-init
+        default: none
+
+permissions:
+  contents: read
+
+env:
+  DONOR: donor/vendor_boot.img
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Verify donor
+        run: |
+          set -euxo pipefail
+          test -f "$DONOR"
+          stat -c 'donor_size=%s' "$DONOR"
+          sha256sum "$DONOR"
+          file "$DONOR"
+
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y android-sdk-libsparse-utils lz4 cpio device-tree-compiler
+          pip3 install --disable-pip-version-check lz4
+
+      - name: Inspect donor
+        run: |
+          set -euxo pipefail
+          mkdir -p work
+          python3 scripts/km5n_vendorboot_lab.py inspect "$DONOR" work
+
+      - name: Apply selected modification
+        run: |
+          set -euxo pipefail
+          python3 scripts/km5n_vendorboot_lab.py modify "$DONOR" work "${{ inputs.modification }}" "${{ inputs.test_name }}"
+
+      - name: Verify output
+        run: |
+          set -euxo pipefail
+          test -f work/output/vendor_boot.img
+          stat -c 'output_size=%s' work/output/vendor_boot.img
+          sha256sum work/output/vendor_boot.img | tee work/output/SHA256SUMS
+          file work/output/vendor_boot.img
+
+      - name: Upload flashable vendor_boot
+        uses: actions/upload-artifact@v4
+        with:
+          name: KM5n-${{ inputs.test_name }}-vendor_boot
+          path: |
+            work/output/vendor_boot.img
+            work/output/SHA256SUMS
+            work/manifest.txt
+            work/diff.txt
+          if-no-files-found: error
+          retention-days: 14
