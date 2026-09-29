@@ -23,6 +23,7 @@ permissions:
 
 env:
   DONOR_ARCHIVE: stock/vendor_boot (1).7z
+  STOCK_ARCHIVE: stock/vendor_boot.7z
 
 jobs:
   build:
@@ -32,68 +33,45 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          lfs: true
+          lfs: false
 
-      - name: Extract donor and stock images
+      - name: Extract donor and stock vendor_boot images
         run: |
           set -euxo pipefail
           test -f "$DONOR_ARCHIVE"
+          test -f "$STOCK_ARCHIVE"
           sudo apt-get update
           sudo apt-get install -y p7zip-full
-          rm -rf work/extract
-          mkdir -p work/extract donor stock
-          7z x -y "$DONOR_ARCHIVE" -o"work/extract"
+          rm -rf work/donor-extract work/stock-extract
+          mkdir -p work/donor-extract work/stock-extract donor stock
+          7z x -y "$DONOR_ARCHIVE" -o"work/donor-extract"
+          7z x -y "$STOCK_ARCHIVE" -o"work/stock-extract"
 
-          echo "Archive contents:"
-          find work/extract -type f -printf '%p %s bytes\\n' | sort
+          echo "Donor archive:"
+          find work/donor-extract -type f -printf '%p %s bytes\\n' | sort
+          echo "Stock archive:"
+          find work/stock-extract -type f -printf '%p %s bytes\\n' | sort
 
-          mapfile -t images < <(find work/extract -type f -iname '*.img' -size +1M -size -100M | sort)
-          test "${#images[@]}" -gt 0
+          mapfile -t donor_images < <(find work/donor-extract -type f -iname 'vendor_boot*.img' -size +1M -size -100M | sort)
+          mapfile -t stock_images < <(find work/stock-extract -type f -iname 'vendor_boot*.img' -size +1M -size -100M | sort)
+          test "${#donor_images[@]}" -ge 1
+          test "${#stock_images[@]}" -ge 1
 
-          echo "Candidate images:"
-          printf '%s\\n' "${images[@]}"
+          cp "${donor_images[0]}" donor/vendor_boot.img
+          cp "${stock_images[0]}" stock/vendor_boot.img
 
-          donor_found=""
-          stock_found=""
-
-          # Prefer explicit names when the archive contains named copies.
-          for f in "${images[@]}"; do
-            base="$(basename "$f" | tr '[:upper:]' '[:lower:]')"
-            if [[ "$base" == *twrp* || "$base" == *donor* || "$base" == *recovery* ]]; then
-              donor_found="$f"
-              break
-            fi
-          done
-
-          # The known donor archive is expected to contain the partially-working
-          # TWRP vendor_boot. If there is only one candidate, use it as donor.
-          if [[ -z "$donor_found" && "${#images[@]}" -eq 1 ]]; then
-            donor_found="${images[0]}"
-          fi
-
-          test -n "$donor_found"
-
-          # Stock vendor_boot must come from the repository's LFS-backed file.
-          # Refuse to proceed if checkout returned the  pointer.
-          test -f stock/vendor_boot.img
-          stock_bytes="$(wc -c < stock/vendor_boot.img)"
-          if [[ "$stock_bytes" -lt 1048576 ]]; then
-            echo "::error::stock/vendor_boot.img is an LFS pointer, not the real image."
-            cat stock/vendor_boot.img
-            exit 1
-          fi
-
-          cp "$donor_found" donor/vendor_boot.img
-
-          echo "Selected donor: $donor_found"
-          stat -c 'donor_size=%s' donor/vendor_boot.img
+          echo "DONOR:"
+          stat -c 'size=%s' donor/vendor_boot.img
           sha256sum donor/vendor_boot.img
           file donor/vendor_boot.img
 
-          echo "Selected stock: stock/vendor_boot.img"
-          stat -c 'stock_size=%s' stock/vendor_boot.img
+          echo "STOCK:"
+          stat -c 'size=%s' stock/vendor_boot.img
           sha256sum stock/vendor_boot.img
           file stock/vendor_boot.img
+
+          test "$(stat -c %s donor/vendor_boot.img)" -gt 1048576
+          test "$(stat -c %s stock/vendor_boot.img)" -gt 1048576
 
       - name: Install image tools
         run: |
