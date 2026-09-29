@@ -23,6 +23,7 @@ permissions:
 
 env:
   DONOR: donor/vendor_boot.img
+  DONOR_ARCHIVE: stock/vendor_boot (1).7z
 
 jobs:
   build:
@@ -34,17 +35,26 @@ jobs:
         with:
           lfs: true
 
-      - name: Verify donor
+      - name: Extract donor vendor_boot from uploaded archive
         run: |
           set -euxo pipefail
-          test -f "$DONOR"
+          test -f "$DONOR_ARCHIVE"
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full
+          rm -rf work/donor-extract
+          mkdir -p work/donor-extract donor
+          7z x -y "$DONOR_ARCHIVE" -o"work/donor-extract"
+          found="$(find work/donor-extract -type f -iname 'vendor_boot*.img' | head -n 1)"
+          test -n "$found"
+          cp "$found" "$DONOR"
+          echo "Extracted donor: $found"
           stat -c 'donor_size=%s' "$DONOR"
           sha256sum "$DONOR"
           file "$DONOR"
 
       - name: Install image tools
         run: |
-          sudo apt-get update
+          set -euxo pipefail
           sudo apt-get install -y android-sdk-libsparse-utils lz4 cpio device-tree-compiler
           pip3 install --disable-pip-version-check lz4
 
