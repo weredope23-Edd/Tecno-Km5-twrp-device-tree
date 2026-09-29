@@ -22,9 +22,7 @@ permissions:
   contents: read
 
 env:
-  DONOR: donor/vendor_boot.img
   DONOR_ARCHIVE: stock/vendor_boot (1).7z
-  STOCK: stock/vendor_boot.img
 
 jobs:
   build:
@@ -36,30 +34,66 @@ jobs:
         with:
           lfs: true
 
-      - name: Extract donor vendor_boot from uploaded archive
+      - name: Extract donor and stock images
         run: |
           set -euxo pipefail
           test -f "$DONOR_ARCHIVE"
           sudo apt-get update
           sudo apt-get install -y p7zip-full
-          rm -rf work/donor-extract
-          mkdir -p work/donor-extract donor
-          7z x -y "$DONOR_ARCHIVE" -o"work/donor-extract"
-          found="$(find work/donor-extract -type f -iname 'vendor_boot*.img' | head -n 1)"
-          test -n "$found"
-          cp "$found" "$DONOR"
-          echo "Extracted donor: $found"
-          stat -c 'donor_size=%s' "$DONOR"
-          sha256sum "$DONOR"
-          file "$DONOR"
+          rm -rf work/extract
+          mkdir -p work/extract donor stock
+          7z x -y "$DONOR_ARCHIVE" -o"work/extract"
 
-      - name: Verify stock vendor_boot
-        run: |
-          set -euxo pipefail
-          test -f "$STOCK"
-          stat -c 'stock_size=%s' "$STOCK"
-          sha256sum "$STOCK"
-          file "$STOCK"
+          echo "Archive contents:"
+          find work/extract -type f -printf '%p %s bytes\\n' | sort
+
+          mapfile -t images < <(find work/extract -type f -iname '*.img' -size +1M -size -100M | sort)
+          test "${#images[@]}" -gt 0
+
+          echo "Candidate images:"
+          printf '%s\\n' "${images[@]}"
+
+          donor_found=""
+          stock_found=""
+
+          # Prefer explicit names when the archive contains named copies.
+          for f in "${images[@]}"; do
+            base="$(basename "$f" | tr '[:upper:]' '[:lower:]')"
+            if [[ "$base" == *twrp* || "$base" == *donor* || "$base" == *recovery* ]]; then
+              donor_found="$f"
+              break
+            fi
+          done
+
+          # The known donor archive is expected to contain the partially-working
+          # TWRP vendor_boot. If there is only one candidate, use it as donor.
+          if [[ -z "$donor_found" && "${#images[@]}" -eq 1 ]]; then
+            donor_found="${images[0]}"
+          fi
+
+          test -n "$donor_found"
+
+          # Stock vendor_boot must come from the repository's LFS-backed file.
+          # Refuse to proceed if checkout returned the  pointer.
+          test -f stock/vendor_boot.img
+          stock_bytes="$(wc -c < stock/vendor_boot.img)"
+          if [[ "$stock_bytes" -lt 1048576 ]]; then
+            echo "::error::stock/vendor_boot.img is an LFS pointer, not the real image."
+            cat stock/vendor_boot.img
+            exit 1
+          fi
+
+          cp "$donor_found" donor/vendor_boot.img
+
+          echo "Selected donor: $donor_found"
+          stat -c 'donor_size=%s' donor/vendor_boot.img
+          sha256sum donor/vendor_boot.img
+          file donor/vendor_boot.img
+
+          echo "Selected stock: stock/vendor_boot.img"
+          stat -c 'stock_size=%s' stock/vendor_boot.img
+          sha256sum stock/vendor_boot.img
+          file stock/vendor_boot.img
 
       - name: Install image tools
         run: |
@@ -71,12 +105,12 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p work
-          python3 scripts/km5n_vendorboot_lab.py inspect "$DONOR" work
+          python3 scripts/km5n_vendorboot_lab.py inspect donor/vendor_boot.img work
 
       - name: Apply selected modification
         run: |
           set -euxo pipefail
-          python3 scripts/km5n_vendorboot_lab.py modify "$DONOR" work "${{ inputs.modification }}" "${{ inputs.test_name }}" "$STOCK"
+          python3 scripts/km5n_vendorboot_lab.py modify donor/vendor_boot.img work "${{ inputs.modification }}" "${{ inputs.test_name }}" stock/vendor_boot.img
 
       - name: Verify output
         run: |
