@@ -24,6 +24,7 @@ permissions:
 env:
   DONOR: donor/vendor_boot.img
   DONOR_ARCHIVE: stock/vendor_boot (1).7z
+  STOCK: stock/vendor_boot.img
 
 jobs:
   build:
@@ -52,6 +53,14 @@ jobs:
           sha256sum "$DONOR"
           file "$DONOR"
 
+      - name: Verify stock vendor_boot
+        run: |
+          set -euxo pipefail
+          test -f "$STOCK"
+          stat -c 'stock_size=%s' "$STOCK"
+          sha256sum "$STOCK"
+          file "$STOCK"
+
       - name: Install image tools
         run: |
           set -euxo pipefail
@@ -67,7 +76,7 @@ jobs:
       - name: Apply selected modification
         run: |
           set -euxo pipefail
-          python3 scripts/km5n_vendorboot_lab.py modify "$DONOR" work "${{ inputs.modification }}" "${{ inputs.test_name }}"
+          python3 scripts/km5n_vendorboot_lab.py modify "$DONOR" work "${{ inputs.modification }}" "${{ inputs.test_name }}" "$STOCK"
 
       - name: Verify output
         run: |
