@@ -78,7 +78,8 @@ jobs:
           curl -fL --retry 3 -o /tmp/Magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v31.0/Magisk-v31.0.apk
           unzip -p /tmp/Magisk.apk lib/x86_64/libmagiskboot.so > /tmp/magiskboot
           chmod 0755 /tmp/magiskboot
-          /tmp/magiskboot --help | head -40
+          /tmp/magiskboot unpack donor/vendor_boot.img -h || true
+          /tmp/magiskboot unpack donor/vendor_boot.img -n -h || true
 
       - name: MagiskBoot no-op control repack
         if: inputs.modification == 'magiskboot-control'
@@ -88,14 +89,13 @@ jobs:
           mkdir -p work/magiskboot/output
           cp donor/vendor_boot.img work/magiskboot/original.img
           cd work/magiskboot
-          /tmp/magiskboot unpack original.img
+          /tmp/magiskboot unpack original.img -n -h
           test -f header
           /tmp/magiskboot repack original.img
           test -f new-boot.img
           cp new-boot.img output/vendor_boot.img
           cd ../..
-          printf 'mode=magiskboot-control\ninput=donor/vendor_boot.img\nmethod=official MagiskBoot v31.0 unpack/repack with no file changes\n' > work/manifest.txt
-          cmp donor/vendor_boot.img work/output/vendor_boot.img || true
+          printf 'mode=magiskboot-control\ninput=donor/vendor_boot.img\nmethod=official MagiskBoot v31.0 no-op unpack/repack; original components preserved with -n\n' > work/manifest.txt
           sha256sum donor/vendor_boot.img work/output/vendor_boot.img | tee work/output/SHA256SUMS
 
       - name: Normalize generated Python escape sequences
