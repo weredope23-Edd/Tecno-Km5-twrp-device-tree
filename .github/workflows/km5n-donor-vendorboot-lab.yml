@@ -14,6 +14,7 @@ on:
         options:
           - none
           - inspect-only
+          - repack-only
           - ueventd-only
           - touch-init
         default: none
@@ -46,23 +47,14 @@ jobs:
           mkdir -p work/donor-extract work/stock-extract donor stock
           7z x -y "$DONOR_ARCHIVE" -o"work/donor-extract"
           7z x -y "$STOCK_ARCHIVE" -o"work/stock-extract"
-
           mapfile -t donor_images < <(find work/donor-extract -type f -iname 'vendor_boot*.img' -size +1M -size -100M | sort)
           mapfile -t stock_images < <(find work/stock-extract -type f -iname 'vendor_boot*.img' -size +1M -size -100M | sort)
           test "${#donor_images[@]}" -ge 1
           test "${#stock_images[@]}" -ge 1
-
           cp "${donor_images[0]}" donor/vendor_boot.img
           cp "${stock_images[0]}" stock/vendor_boot.img
-
-          echo "DONOR:"
-          stat -c 'size=%s' donor/vendor_boot.img
-          sha256sum donor/vendor_boot.img
-          file donor/vendor_boot.img
-          echo "STOCK:"
-          stat -c 'size=%s' stock/vendor_boot.img
-          sha256sum stock/vendor_boot.img
-          file stock/vendor_boot.img
+          echo "DONOR:"; stat -c 'size=%s' donor/vendor_boot.img; sha256sum donor/vendor_boot.img; file donor/vendor_boot.img
+          echo "STOCK:"; stat -c 'size=%s' stock/vendor_boot.img; sha256sum stock/vendor_boot.img; file stock/vendor_boot.img
           test "$(stat -c %s donor/vendor_boot.img)" -gt 1048576
           test "$(stat -c %s stock/vendor_boot.img)" -gt 1048576
 
@@ -82,7 +74,6 @@ jobs:
           s = s.replace(r'\\x', r'\x').replace(r'\\0', r'\0').replace(r'\\n', r'\n')
           p.write_text(s)
           compile(s, str(p), 'exec')
-          print('Python helper syntax validated after escape normalization')
           PY
 
       - name: Inspect donor
