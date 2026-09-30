@@ -146,6 +146,12 @@ def main():
     out = w / "output"; out.mkdir(parents=True, exist_ok=True)
     if mode in ("none", "inspect-only"):
         shutil.copy2(donor, out / "vendor_boot.img"); (w / "diff.txt").write_text(f"mode={mode}\ntest={test}\nNo image mutation.\n"); return
+    if mode == "repack-only":
+        donor_rec = cpio_read(dec_legacy(entries[1][3]))
+        newrec = enc_legacy(cpio_write(donor_rec))
+        (out / "vendor_boot.img").write_bytes(rebuild(donor, newrec))
+        (w / "diff.txt").write_text(f"mode={mode}\ntest={test}\nNo file changes; donor recovery ramdisk decoded and repacked only.\n")
+        return
     if mode not in ("ueventd-only", "touch-init"): raise SystemExit(f"unsupported modification: {mode}")
     if len(sys.argv) < 7: raise SystemExit(f"{mode} requires stock vendor_boot path")
     stock = sys.argv[6]; _, _, _, _, _, _, _, _, sentries, _, _ = parse(stock)
