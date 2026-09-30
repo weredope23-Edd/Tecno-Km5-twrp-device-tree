@@ -14,6 +14,7 @@ on:
         options:
           - none
           - inspect-only
+          - magiskboot-control
           - repack-only
           - ueventd-only
           - touch-init
@@ -42,7 +43,7 @@ jobs:
           test -f "$DONOR_ARCHIVE"
           test -f "$STOCK_ARCHIVE"
           sudo apt-get update
-          sudo apt-get install -y p7zip-full
+          sudo apt-get install -y p7zip-full curl unzip
           rm -rf work/donor-extract work/stock-extract
           mkdir -p work/donor-extract work/stock-extract donor stock
           7z x -y "$DONOR_ARCHIVE" -o"work/donor-extract"
@@ -53,8 +54,14 @@ jobs:
           test "${#stock_images[@]}" -ge 1
           cp "${donor_images[0]}" donor/vendor_boot.img
           cp "${stock_images[0]}" stock/vendor_boot.img
-          echo "DONOR:"; stat -c 'size=%s' donor/vendor_boot.img; sha256sum donor/vendor_boot.img; file donor/vendor_boot.img
-          echo "STOCK:"; stat -c 'size=%s' stock/vendor_boot.img; sha256sum stock/vendor_boot.img; file stock/vendor_boot.img
+          echo "DONOR:"
+          stat -c 'size=%s' donor/vendor_boot.img
+          sha256sum donor/vendor_boot.img
+          file donor/vendor_boot.img
+          echo "STOCK:"
+          stat -c 'size=%s' stock/vendor_boot.img
+          sha256sum stock/vendor_boot.img
+          file stock/vendor_boot.img
           test "$(stat -c %s donor/vendor_boot.img)" -gt 1048576
           test "$(stat -c %s stock/vendor_boot.img)" -gt 1048576
 
@@ -64,7 +71,35 @@ jobs:
           sudo apt-get install -y android-sdk-libsparse-utils lz4 cpio device-tree-compiler
           pip3 install --disable-pip-version-check lz4
 
+      - name: Install official MagiskBoot
+        if: inputs.modification == 'magiskboot-control'
+        run: |
+          set -euxo pipefail
+          curl -fL --retry 3 -o /tmp/Magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v31.0/Magisk-v31.0.apk
+          unzip -p /tmp/Magisk.apk lib/x86_64/libmagiskboot.so > /tmp/magiskboot
+          chmod 0755 /tmp/magiskboot
+          /tmp/magiskboot --help | head -40
+
+      - name: MagiskBoot no-op control repack
+        if: inputs.modification == 'magiskboot-control'
+        run: |
+          set -euxo pipefail
+          rm -rf work/magiskboot
+          mkdir -p work/magiskboot/output
+          cp donor/vendor_boot.img work/magiskboot/original.img
+          cd work/magiskboot
+          /tmp/magiskboot unpack original.img
+          test -f header
+          /tmp/magiskboot repack original.img
+          test -f new-boot.img
+          cp new-boot.img output/vendor_boot.img
+          cd ../..
+          printf 'mode=magiskboot-control\ninput=donor/vendor_boot.img\nmethod=official MagiskBoot v31.0 unpack/repack with no file changes\n' > work/manifest.txt
+          cmp donor/vendor_boot.img work/output/vendor_boot.img || true
+          sha256sum donor/vendor_boot.img work/output/vendor_boot.img | tee work/output/SHA256SUMS
+
       - name: Normalize generated Python escape sequences
+        if: inputs.modification != 'magiskboot-control'
         run: |
           set -euxo pipefail
           python3 - <<'PY'
@@ -77,12 +112,14 @@ jobs:
           PY
 
       - name: Inspect donor
+        if: inputs.modification != 'magiskboot-control'
         run: |
           set -euxo pipefail
           mkdir -p work
           python3 scripts/km5n_vendorboot_lab.py inspect donor/vendor_boot.img work
 
       - name: Apply selected modification
+        if: inputs.modification != 'magiskboot-control'
         run: |
           set -euxo pipefail
           python3 scripts/km5n_vendorboot_lab.py modify donor/vendor_boot.img work "${{ inputs.modification }}" "${{ inputs.test_name }}" stock/vendor_boot.img
@@ -92,7 +129,7 @@ jobs:
           set -euxo pipefail
           test -f work/output/vendor_boot.img
           stat -c 'output_size=%s' work/output/vendor_boot.img
-          sha256sum work/output/vendor_boot.img | tee work/output/SHA256SUMS
+          sha256sum work/output/vendor_boot.img | tee -a work/output/SHA256SUMS
           file work/output/vendor_boot.img
 
       - name: Upload flashable vendor_boot
