@@ -18,6 +18,7 @@ on:
           - repack-only
           - ueventd-only
           - touch-init
+          - stock-dtb-touch
         default: none
 
 permissions:
