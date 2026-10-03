@@ -173,6 +173,8 @@ def main():
             raise SystemExit("page-size mismatch: donor=" + str(page) + " stock=" + str(stock_page))
         if stock_dtbs <= 0:
             raise SystemExit("stock vendor_boot has no DTB payload")
+        if stock_dtbs != dtbs:
+            raise SystemExit("DTB size mismatch: donor=" + str(dtbs) + " stock=" + str(stock_dtbs))
         ram = enc_legacy(cpio_write(donor_rec))
         dtb_off = ((page + len(ram) + page - 1) // page) * page
         rebuilt_b = bytearray(rebuilt)
