@@ -160,7 +160,7 @@ def main():
     stock_bytes = Path(stock).read_bytes()
     _, stock_page, _, stock_dtbs, _, _, _, _, _, stock_dtb_off, _ = parse(stock)
     donor_dtb = b[dtbo:dtbo + dtbs]
-    stock_dtb = stock_bytes[stock_dtb_off:stock_dtb_off + stock_dtbs
+    stock_dtb = stock_bytes[stock_dtb_off:stock_dtb_off + stock_dtbs]
     if mode == "ueventd-only":
         common = [name for name in stock_rec if name != "TRAILER!!!" and "ueventd" in name.lower() and name in donor_rec]
         if not common: raise SystemExit("No common ueventd files found")
