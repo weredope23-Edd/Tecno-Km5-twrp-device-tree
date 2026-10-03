@@ -152,17 +152,35 @@ def main():
         (out / "vendor_boot.img").write_bytes(rebuild(donor, newrec))
         (w / "diff.txt").write_text(f"mode={mode}\ntest={test}\nNo file changes; donor recovery ramdisk decoded and repacked only.\n")
         return
-    if mode not in ("ueventd-only", "touch-init"): raise SystemExit(f"unsupported modification: {mode}")
+    if mode not in ("ueventd-only", "touch-init", "stock-dtb-touch"):
+        raise SystemExit("unsupported modification: " + mode)
     if len(sys.argv) < 7: raise SystemExit(f"{mode} requires stock vendor_boot path")
     stock = sys.argv[6]; _, _, _, _, _, _, _, _, sentries, _, _ = parse(stock)
     donor_rec = cpio_read(dec_legacy(entries[1][3])); stock_rec = cpio_read(dec_legacy(sentries[1][3])); changed = []
+    stock_bytes = Path(stock).read_bytes()
+    _, stock_page, _, stock_dtbs, _, _, _, _, _, stock_dtb_off, _ = parse(stock)
+    donor_dtb = b[dtbo:dtbo + dtbs]
+    stock_dtb = stock_bytes[stock_dtb_off:stock_dtb_off + stock_dtbs
     if mode == "ueventd-only":
         common = [name for name in stock_rec if name != "TRAILER!!!" and "ueventd" in name.lower() and name in donor_rec]
         if not common: raise SystemExit("No common ueventd files found")
         for name in common: donor_rec[name] = stock_rec[name]; changed.append(name)
     else:
         changed = transplant_touch(donor_rec, "device/tecno/km5n/recovery/root")
-    (out / "vendor_boot.img").write_bytes(rebuild(donor, enc_legacy(cpio_write(donor_rec))))
+    rebuilt = rebuild(donor, enc_legacy(cpio_write(donor_rec)))
+    if mode == "stock-dtb-touch":
+        if stock_page != page:
+            raise SystemExit("page-size mismatch: donor=" + str(page) + " stock=" + str(stock_page))
+        if stock_dtbs <= 0:
+            raise SystemExit("stock vendor_boot has no DTB payload")
+        ram = enc_legacy(cpio_write(donor_rec))
+        dtb_off = ((page + len(ram) + page - 1) // page) * page
+        rebuilt_b = bytearray(rebuilt)
+        rebuilt_b[dtb_off:dtb_off + stock_dtbs] = stock_dtb
+        rebuilt = bytes(rebuilt_b)
+        changed.append("vendor_boot DTB replaced with stock DTB")
+        print("DTB comparison: donor=", hashlib.sha256(donor_dtb).hexdigest(), "stock=", hashlib.sha256(stock_dtb).hexdigest())
+    (out / "vendor_boot.img").write_bytes(rebuilt)
     (w / "diff.txt").write_text(f"mode={mode}\ntest={test}\nChanged files:\n" + "\n".join(changed) + "\n")
     print("Changed:", ", ".join(changed))
 
