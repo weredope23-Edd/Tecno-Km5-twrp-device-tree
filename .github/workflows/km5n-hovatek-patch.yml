@@ -7,7 +7,7 @@ on:
       - "device/tecno/km5n/recovery/root/**"
       - "device/tecno/km5n/stock_vendor_overlay/**"
       - "stock/vendor_a.img"
-      - "stock/vendor_boot.img"
+      - "stock/vendor_boot.7z"
       - "stock/vendor_dlkm.img"
 
 permissions:
@@ -25,15 +25,15 @@ jobs:
       - name: Install extraction tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y erofs-utils cpio python3-lz4
+          sudo apt-get install -y erofs-utils cpio python3-lz4 p7zip-full
 
       - name: Assemble complete stock-derived Hovatek patch
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf patch staging vendor_extract vendor_dlkm_extract vb_ramdisk
+          rm -rf patch staging vendor_extract vendor_dlkm_extract vb_ramdisk stock_vb
           mkdir -p patch staging vendor_extract vendor_dlkm_extract vb_ramdisk
-          mkdir -p patch/lib/modules patch/vendor/lib/modules patch/vendor_dlkm/lib/modules
+          mkdir -p patch/lib/modules patch/vendor/lib/modules patch/vendor_dlkm/lib/modules stock_vb
           mkdir -p patch/vendor/firmware
           mkdir -p patch/vendor/etc/vintf/manifest
           mkdir -p patch/vendor/bin/hw patch/vendor/lib64
@@ -72,10 +72,14 @@ jobs:
 
           # 3. Extract the stock vendor_boot v4 ramdisk. KM5n's stock image
           # contains the real first-stage fstab and recovery module metadata.
-          test -s stock/vendor_boot.img
+          test -s stock/vendor_boot.7z
+          7z x -y stock/vendor_boot.7z -ostock_vb >/dev/null
+          VB="$(find stock_vb -type f -name 'vendor_boot.img' -print -quit)"
+          test -n "$VB"
+          export VB
           python3 - <<'PY'
-          import struct, pathlib
-          p = pathlib.Path("stock/vendor_boot.img")
+          import os, struct, pathlib
+          p = pathlib.Path(os.environ["VB"])
           d = p.read_bytes()
           assert d[:8] == b"VNDRBOOT"
           hv, page, ramdisk_size = struct.unpack_from("<III", d, 8)
