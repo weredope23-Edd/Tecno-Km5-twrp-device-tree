@@ -82,7 +82,8 @@ jobs:
           p = pathlib.Path(os.environ["VB"])
           d = p.read_bytes()
           assert d[:8] == b"VNDRBOOT"
-          hv, page, ramdisk_size = struct.unpack_from("<III", d, 8)
+          hv, page = struct.unpack_from("<II", d, 8)
+          ramdisk_size = struct.unpack_from("<I", d, 24)[0]
           assert hv == 4
           ramdisk = d[page:page + ramdisk_size]
           pathlib.Path("vb_ramdisk/vendor_ramdisk.lz4").write_bytes(ramdisk)
