@@ -1,11 +1,14 @@
-name: KM5n - Build Hovatek patch.zip
+name: KM5n - Build complete Hovatek patch.zip
 
 on:
   push:
     paths:
       - ".github/workflows/km5n-hovatek-patch.yml"
-      - "device/tecno/km5n/recovery/root/lib/modules/**"
+      - "device/tecno/km5n/recovery/root/**"
+      - "device/tecno/km5n/stock_vendor_overlay/**"
       - "stock/vendor_a.img"
+      - "stock/vendor_boot.img"
+      - "stock/vendor_dlkm.img"
 
 permissions:
   contents: read
@@ -19,18 +22,25 @@ jobs:
         with:
           lfs: true
 
-      - name: Install EROFS tools
+      - name: Install extraction tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y erofs-utils
+          sudo apt-get install -y erofs-utils cpio python3-lz4
 
-      - name: Assemble Hovatek patch
+      - name: Assemble complete stock-derived Hovatek patch
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf patch staging vendor_extract
+          rm -rf patch staging vendor_extract vendor_dlkm_extract vb_ramdisk
+          mkdir -p patch staging vendor_extract vendor_dlkm_extract vb_ramdisk
           mkdir -p patch/lib/modules patch/vendor/lib/modules patch/vendor_dlkm/lib/modules
+          mkdir -p patch/vendor/firmware
+          mkdir -p patch/vendor/etc/vintf/manifest
+          mkdir -p patch/vendor/bin/hw patch/vendor/lib64
+          mkdir -p patch/system/etc
 
+          # 1. Touch kernel modules. Hovatek's boot+vendor_boot method expects
+          # these in all three module locations.
           for f in adaptive-ts.ko novatek_nt36xxx.ko nt36528a_hdp_dsi_vdo_hx_hxt9_120hz_km5.ko; do
             src="device/tecno/km5n/recovery/root/lib/modules/$f"
             test -s "$src"
@@ -39,33 +49,161 @@ jobs:
             cp -a "$src" "patch/vendor_dlkm/lib/modules/$f"
           done
 
-          # If the stock vendor image is available through Git LFS, extract only
-          # the Novatek touchscreen firmware files. Do not add unrelated vendor files.
-          if test -s stock/vendor_a.img && test "$(stat -c%s stock/vendor_a.img)" -gt 1000000; then
-            mkdir -p vendor_extract
-            fsck.erofs --extract=vendor_extract stock/vendor_a.img
-            for f in novatek_ts_fw_02.bin novatek_mp.bin; do
-              if test -f "vendor_extract/vendor/firmware/$f"; then
-                mkdir -p patch/vendor/firmware
-                cp -a "vendor_extract/vendor/firmware/$f" patch/vendor/firmware/
+          # 2. Extract stock EROFS vendor/vendor_dlkm and locate the exact
+          # Novatek firmware by basename rather than assuming its subdirectory.
+          found_fw=0
+          for image in stock/vendor_a.img stock/vendor_dlkm.img; do
+            if test -s "$image" && test "$(stat -c%s "$image")" -gt 1000000; then
+              if [[ "$image" == *vendor_dlkm* ]]; then
+                out="vendor_dlkm_extract"
+              else
+                out="vendor_extract"
               fi
-            done
-          fi
+              fsck.erofs --extract="$out" "$image"
+            fi
+          done
 
-          mkdir -p staging
-          cp -a patch staging/patch
+          for f in novatek_ts_fw_02.bin novatek_mp.bin; do
+            src="$(find vendor_extract vendor_dlkm_extract -type f -name "$f" -print -quit || true)"
+            test -n "$src"
+            test -s "$src"
+            cp -a "$src" "patch/vendor/firmware/$f"
+          done
+
+          # 3. Extract the stock vendor_boot v4 ramdisk. KM5n's stock image
+          # contains the real first-stage fstab and recovery module metadata.
+          test -s stock/vendor_boot.img
+          python3 - <<'PY'
+          import struct, pathlib
+          p = pathlib.Path("stock/vendor_boot.img")
+          d = p.read_bytes()
+          assert d[:8] == b"VNDRBOOT"
+          hv, page, ramdisk_size = struct.unpack_from("<III", d, 8)
+          assert hv == 4
+          ramdisk = d[page:page + ramdisk_size]
+          pathlib.Path("vb_ramdisk/vendor_ramdisk.lz4").write_bytes(ramdisk)
+          print("vendor_boot v4:", "page_size=", page, "ramdisk_size=", ramdisk_size)
+          PY
+
+          python3 - <<'PY'
+          import pathlib, struct, lz4.block
+          d = pathlib.Path("vb_ramdisk/vendor_ramdisk.lz4").read_bytes()
+          assert d[:4] == b"\x02\x21\x4c\x18"
+          pos, out, blocks = 4, bytearray(), 0
+          while pos + 4 <= len(d):
+              sz = struct.unpack_from("<I", d, pos)[0]
+              pos += 4
+              if sz == 0:
+                  break
+              raw = bool(sz & 0x80000000)
+              sz &= 0x7fffffff
+              if pos + sz > len(d):
+                  break
+              blk = d[pos:pos+sz]
+              pos += sz
+              if raw:
+                  out.extend(blk)
+              else:
+                  done = False
+                  for cap in (4<<20, 8<<20, 16<<20, 32<<20):
+                      try:
+                          out.extend(lz4.block.decompress(blk, uncompressed_size=cap))
+                          done = True
+                          break
+                      except Exception:
+                          pass
+                  if not done:
+                      raise RuntimeError("Unable to decompress stock vendor_boot LZ4 block")
+              blocks += 1
+          assert out[:6] == b"070701"
+          pathlib.Path("vb_ramdisk/vendor_ramdisk.cpio").write_bytes(out)
+          print("LZ4 blocks:", blocks, "CPIO bytes:", len(out))
+          PY
+
+          mkdir -p vb_ramdisk/root
+          (cd vb_ramdisk/root && cpio -idm < ../vendor_ramdisk.cpio)
+
+          # 4. Stock first-stage fstab.
+          test -s vb_ramdisk/root/first_stage_ramdisk/fstab.mt6768
+          mkdir -p patch/first_stage_ramdisk
+          cp -a vb_ramdisk/root/first_stage_ramdisk/fstab.mt6768 patch/first_stage_ramdisk/
+
+          # 5. Stock recovery init/ueventd rules.
+          shopt -s nullglob
+          rc_files=(vb_ramdisk/root/init.recovery*.rc vb_ramdisk/root/ueventd*.rc)
+          test ${#rc_files[@]} -gt 0
+          for src in "${rc_files[@]}"; do
+            cp -a "$src" patch/
+          done
+
+          # 6. Stock module metadata needed by the recovery module loader.
+          for f in modules.alias modules.load.recovery modules.dep modules.softdep; do
+            if test -s "vb_ramdisk/root/lib/modules/$f"; then
+              cp -a "vb_ramdisk/root/lib/modules/$f" patch/lib/modules/
+            fi
+          done
+
+          # 7. Existing KM5n recovery.fstab from the audited device tree.
+          cp -a device/tecno/km5n/recovery/root/system/etc/recovery.fstab patch/system/etc/
+
+          # 8. Trustonic/KeyMint/Gatekeeper runtime pieces already extracted
+          # from KM5n stock. Only the relevant files are included.
+          for f in \
+            android.hardware.gatekeeper-service.trustonic \
+            android.hardware.security.keymint@3.0-service.trustonic \
+            vendor.trustonic.tee-service; do
+            src="device/tecno/km5n/stock_vendor_overlay/vendor/bin/hw/$f"
+            test -s "$src"
+            cp -a "$src" patch/vendor/bin/hw/
+          done
+
+          for f in \
+            libMcClient.so libTEECommon.so libkmsetkey.so libladder.so \
+            vendor.trustonic.tee-V1-ndk.so; do
+            src="device/tecno/km5n/stock_vendor_overlay/vendor/lib64/$f"
+            test -s "$src"
+            cp -a "$src" patch/vendor/lib64/
+          done
+
+          # Relevant Trustonic VINTF manifests, moved under vendor/etc/vintf
+          # because that is the recovery-root location requested for the patch.
+          for f in \
+            android.hardware.gatekeeper-service.trustonic.xml \
+            android.hardware.security.keymint-service.trustonic.xml \
+            android.hardware.security.secureclock-service.trustonic.xml \
+            android.hardware.security.sharedsecret-service.trustonic.xml; do
+            src="device/tecno/km5n/recovery/root/system/etc/vintf/manifest/$f"
+            test -s "$src"
+            cp -a "$src" patch/vendor/etc/vintf/manifest/
+          done
+
+          # 9. Keep the requested patch self-contained and verify every
+          # critical file before packaging.
+          test -s patch/vendor/firmware/novatek_ts_fw_02.bin
+          test -s patch/vendor/firmware/novatek_mp.bin
+          test -s patch/first_stage_ramdisk/fstab.mt6768
+          test -s patch/system/etc/recovery.fstab
+          test -s patch/lib/modules/modules.alias
+          test -s patch/lib/modules/modules.load.recovery
+
           (
-            cd staging
-            zip -9 -r ../KM5n-Hovatek-patch.zip patch
+            cd patch
+            find . -type f -print | sort
+          ) > patch/CONTENTS.txt
+
+          (
+            cd patch
+            zip -9 -r ../KM5n-Hovatek-patch.zip .
           )
 
-          echo "Patch contents:"
+          echo "===== PATCH CONTENTS ====="
           unzip -l KM5n-Hovatek-patch.zip
+          echo "===== SHA256 ====="
           sha256sum KM5n-Hovatek-patch.zip
 
-      - name: Upload patch.zip
+      - name: Upload complete patch.zip
         uses: actions/upload-artifact@v4
         with:
-          name: KM5n-Hovatek-patch
+          name: KM5n-Hovatek-patch-complete
           path: KM5n-Hovatek-patch.zip
           if-no-files-found: error
