@@ -4,9 +4,8 @@ on:
   push:
     paths:
       - ".github/workflows/km5n-hovatek-patch.yml"
-      - "device/tecno/km5n/recovery/root/**"
+      - "device/tecno/km5n/recovery/root/lib/modules/**"
       - "stock/vendor_a.img"
-      - "stock/vendor_boot.7z"
       - "stock/vendor_dlkm.img"
 
 permissions:
@@ -21,132 +20,54 @@ jobs:
         with:
           lfs: true
 
-      - name: Install extraction tools
+      - name: Install EROFS tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y erofs-utils cpio python3-lz4 p7zip-full
+          sudo apt-get install -y erofs-utils
 
       - name: Build minimal touch-only patch
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf patch vendor_dlkm_extract vb_ramdisk stock_vb
-          mkdir -p patch/lib/modules patch/vendor/lib/modules patch/vendor_dlkm/lib/modules
-          mkdir -p patch/vendor/firmware vendor_dlkm_extract vb_ramdisk stock_vb
+          rm -rf patch vendor_extract vendor_dlkm_extract
+          mkdir -p             patch/lib/modules             patch/vendor/lib/modules             patch/vendor_dlkm/lib/modules             patch/vendor/firmware             vendor_extract             vendor_dlkm_extract
 
-          # These are the three KM5n touch modules identified from stock.
-          TOUCH_MODULES=(
-            adaptive-ts.ko
-            novatek_nt36xxx.ko
-            nt36528a_hdp_dsi_vdo_hx_hxt9_120hz_km5.ko
-          )
-
-          # Hovatek's boot.img + vendor_boot.img touch method expects each
+          # Exact KM5n touch modules. Hovatek's documented
+          # boot.img + vendor_boot.img method requires each named
           # touch driver in all three module locations.
-          for f in "${TOUCH_MODULES[@]}"; do
+          for f in             adaptive-ts.ko             novatek_nt36xxx.ko             nt36528a_hdp_dsi_vdo_hx_hxt9_120hz_km5.ko; do
             src="device/tecno/km5n/recovery/root/lib/modules/$f"
             test -s "$src"
-            cp -a "$src" "patch/lib/modules/$f"
-            cp -a "$src" "patch/vendor/lib/modules/$f"
-            cp -a "$src" "patch/vendor_dlkm/lib/modules/$f"
+            cp -a "$src" patch/lib/modules/
+            cp -a "$src" patch/vendor/lib/modules/
+            cp -a "$src" patch/vendor_dlkm/lib/modules/
           done
 
-          # Extract stock vendor_dlkm. We use the stock module dependency
-          # database to determine the smallest additional set needed to load
-          # the touch chain, instead of copying unrelated recovery/vendor files.
-          test -s stock/vendor_dlkm.img
-          fsck.erofs --extract=vendor_dlkm_extract stock/vendor_dlkm.img
+          # Exact stock Novatek firmware. These are the only non-module
+          # files retained because the Novatek driver loads its firmware.
+          fsck.erofs --extract=vendor_extract stock/vendor_a.img
 
-          test -s vendor_dlkm_extract/lib/modules/modules.dep
-
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          depfile = Path("vendor_dlkm_extract/lib/modules/modules.dep")
-          wanted = {
-              "adaptive-ts.ko",
-              "novatek_nt36xxx.ko",
-              "nt36528a_hdp_dsi_vdo_hx_hxt9_120hz_km5.ko",
-          }
-          deps = {}
-
-          for line in depfile.read_text(errors="replace").splitlines():
-              if ":" not in line:
-                  continue
-              left, right = line.split(":", 1)
-              base = Path(left.strip()).name
-              deps[base] = [Path(x).name for x in right.split() if x.strip()]
-
-          queue = list(wanted)
-          selected = set(wanted)
-          while queue:
-              mod = queue.pop(0)
-              for dep in deps.get(mod, []):
-                  if dep not in selected:
-                      selected.add(dep)
-                      queue.append(dep)
-
-          # Only package dependencies which actually exist in stock.
-          root = Path("vendor_dlkm_extract")
-          out = Path("patch/vendor_dlkm/lib/modules")
-          missing = []
-          for mod in sorted(selected):
-              matches = list(root.rglob(mod))
-              if not matches:
-                  if mod in wanted:
-                      missing.append(mod)
-                  continue
-              src = matches[0]
-              dst = out / mod
-              dst.write_bytes(src.read_bytes())
-
-          if missing:
-              raise SystemExit("Missing required touch module(s): " + ", ".join(missing))
-
-          print("Touch modules and transitive dependencies:")
-          for mod in sorted(selected):
-              print("  " + mod)
-
-          Path("patch/TOUCH_MODULES.txt").write_text(
-              "Primary touch modules:\n" +
-              "\n".join("  " + x for x in sorted(wanted)) +
-              "\n\nAdditional stock module dependencies:\n" +
-              "\n".join("  " + x for x in sorted(selected - wanted)) +
-              "\n"
-          )
-          PY
-
-          # Copy the exact stock Novatek firmware. No Trustonic, fstab,
-          # recovery.rc, VINTF or other broad runtime components are included.
           for f in novatek_ts_fw_02.bin novatek_mp.bin; do
-            src="$(find vendor_dlkm_extract -type f -name "$f" -print -quit || true)"
-            if test -z "$src"; then
-              # Firmware normally lives in vendor_a, not vendor_dlkm.
-              sudo apt-get install -y -qq >/dev/null 2>&1 || true
-              mkdir -p vendor_extract
-              fsck.erofs --extract=vendor_extract stock/vendor_a.img
-              src="$(find vendor_extract -type f -name "$f" -print -quit || true)"
-            fi
+            src="$(find vendor_extract -type f -name "$f" -print -quit || true)"
             test -n "$src"
             test -s "$src"
-            cp -a "$src" "patch/vendor/firmware/$f"
+            cp -a "$src" patch/vendor/firmware/
           done
 
-          (
-            cd patch
-            find . -type f -print | sort
-          ) > patch/CONTENTS.txt
+          # Verify this patch contains nothing except the 11 required files.
+          count="$(find patch -type f | wc -l)"
+          test "$count" -eq 11
+
+          echo "===== MINIMAL TOUCH PATCH ====="
+          find patch -type f -printf '%P %s bytes\n' | sort
 
           (
             cd patch
             zip -9 -r ../KM5n-Hovatek-patch-minimal.zip .
           )
 
-          echo "===== MINIMAL PATCH CONTENTS ====="
-          unzip -l KM5n-Hovatek-patch-minimal.zip
-          echo "===== SHA256 ====="
           sha256sum KM5n-Hovatek-patch-minimal.zip
+          unzip -l KM5n-Hovatek-patch-minimal.zip
 
       - name: Upload minimal touch patch
         uses: actions/upload-artifact@v4
