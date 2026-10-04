@@ -133,13 +133,11 @@ jobs:
           mkdir -p patch/first_stage_ramdisk
           cp -a vb_ramdisk/root/first_stage_ramdisk/fstab.mt6768 patch/first_stage_ramdisk/
 
-          # 5. Stock recovery init/ueventd rules.
-          shopt -s nullglob
-          rc_files=(vb_ramdisk/root/init.recovery*.rc vb_ramdisk/root/ueventd*.rc)
-          test ${#rc_files[@]} -gt 0
-          for src in "${rc_files[@]}"; do
-            cp -a "$src" patch/
-          done
+          # 5. Recovery init/ueventd rules. The stock vendor_boot ramdisk
+          # carries first-stage recovery data but not these root-level recovery
+          # rc files, so use the audited KM5n recovery copies.
+          cp -a device/tecno/km5n/recovery/root/init.recovery.mt6768.rc patch/
+          cp -a device/tecno/km5n/recovery/root/system/etc/ueventd.rc patch/
 
           # 6. Stock module metadata needed by the recovery module loader.
           for f in modules.alias modules.load.recovery modules.dep modules.softdep; do
