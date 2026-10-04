@@ -1,0 +1,71 @@
+name: KM5n - Build Hovatek patch.zip
+
+on:
+  push:
+    paths:
+      - ".github/workflows/km5n-hovatek-patch.yml"
+      - "device/tecno/km5n/recovery/root/lib/modules/**"
+      - "stock/vendor_a.img"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository with LFS
+        uses: actions/checkout@v5
+        with:
+          lfs: true
+
+      - name: Install EROFS tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y erofs-utils
+
+      - name: Assemble Hovatek patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf patch staging vendor_extract
+          mkdir -p patch/lib/modules patch/vendor/lib/modules patch/vendor_dlkm/lib/modules
+
+          for f in adaptive-ts.ko novatek_nt36xxx.ko nt36528a_hdp_dsi_vdo_hx_hxt9_120hz_km5.ko; do
+            src="device/tecno/km5n/recovery/root/lib/modules/$f"
+            test -s "$src"
+            cp -a "$src" "patch/lib/modules/$f"
+            cp -a "$src" "patch/vendor/lib/modules/$f"
+            cp -a "$src" "patch/vendor_dlkm/lib/modules/$f"
+          done
+
+          # If the stock vendor image is available through Git LFS, extract only
+          # the Novatek touchscreen firmware files. Do not add unrelated vendor files.
+          if test -s stock/vendor_a.img && test "$(stat -c%s stock/vendor_a.img)" -gt 1000000; then
+            mkdir -p vendor_extract
+            fsck.erofs --extract=vendor_extract stock/vendor_a.img
+            for f in novatek_ts_fw_02.bin novatek_mp.bin; do
+              if test -f "vendor_extract/vendor/firmware/$f"; then
+                mkdir -p patch/vendor/firmware
+                cp -a "vendor_extract/vendor/firmware/$f" patch/vendor/firmware/
+              fi
+            done
+          fi
+
+          mkdir -p staging
+          cp -a patch staging/patch
+          (
+            cd staging
+            zip -9 -r ../KM5n-Hovatek-patch.zip patch
+          )
+
+          echo "Patch contents:"
+          unzip -l KM5n-Hovatek-patch.zip
+          sha256sum KM5n-Hovatek-patch.zip
+
+      - name: Upload patch.zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: KM5n-Hovatek-patch
+          path: KM5n-Hovatek-patch.zip
+          if-no-files-found: error
